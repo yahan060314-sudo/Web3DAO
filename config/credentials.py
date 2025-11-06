@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 # 获取当前文件所在的目录
 # 这能确保无论从哪里运行主程序，都能正确找到.env文件
 # .env文件应该在项目根目录，即 trading_bot/ 的上一级
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 dotenv_path = os.path.join(project_root, '.env')
 
 # 从.env文件加载环境变量
