@@ -1,103 +1,76 @@
 
+# -*- coding: utf-8 -*-
 """
-HKU Web3 Quant Hackathon — Evaluation Metrics
----------------------------------------------
-Implements:
+evaluation_matrix_roostoo.py
+
+Roostoo-compatible evaluation module for the HKU Web3 Quant Hackathon.
+Computes:
 - Portfolio Return
-- Sharpe Ratio  (mean portfolio return / std of portfolio returns)
-- Sortino Ratio (mean portfolio return / std of negative portfolio returns)  # per brief
-- Calmar Ratio  (mean portfolio return / |Max Drawdown|)
+- Sharpe Ratio
+- Sortino Ratio
+- Calmar Ratio
 - Composite Score = 0.4*Sortino + 0.3*Sharpe + 0.3*Calmar
+- Max Drawdown
+- Optional efficiency metrics from orders log:
+  * Trade success rate
+  * Avg holding time
+  * Cooldown violations
+  * Rate limit (1 trade/min) violations
 
-Assumptions (align with the brief):
-- Returns are simple period-to-period portfolio returns (e.g., 1-minute, 5-minute, or daily).
-- Mean return is the arithmetic average of those period returns.
-- "Std of negative returns" means sample standard deviation computed on returns < 0 only.
-- Max Drawdown is computed from the equity curve as the largest peak-to-trough percentage loss.
-- No annualization is applied (the brief's formulas are un-annualized).
-
-You can pass either an equity series or a returns series.
+I/O:
+- Equity CSV schema: timestamp (datetime or epoch), equity (float)
+- Orders CSV schema (optional):
+    timestamp, action (BUY/SELL), pair, quantity, price, status (SUCCESS/FAIL), order_id
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Optional, Dict, Literal
+import argparse
+from typing import Optional, Dict
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from pathlib import Path
+import json
 
 
-def _to_returns(
-    series: pd.Series, 
-    input_type: Literal["equity","returns"]="equity"
-) -> pd.Series:
-    """Convert equity series to simple returns if needed; clean NaNs."""
-    s = series.astype(float).copy()
-    if input_type == "equity":
-        ret = s.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
-    elif input_type == "returns":
-        ret = s.replace([np.inf, -np.inf], np.nan).dropna()
-    else:
-        raise ValueError("input_type must be 'equity' or 'returns'")
-    return ret
+# --------- Core math ---------
+
+def _to_returns(equity: pd.Series) -> pd.Series:
+    r = equity.astype(float).pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+    return r
 
 
-def _to_equity(
-    series: pd.Series,
-    input_type: Literal["equity","returns"]="equity",
-    init_equity: float = 1.0
-) -> pd.Series:
-    """Convert returns series to equity curve if needed."""
-    s = series.astype(float).copy()
-    if input_type == "equity":
-        eq = s
-    else:
-        eq = (1 + s).cumprod() * float(init_equity)
-    return eq
-
-
-def portfolio_return(
-    equity: pd.Series
-) -> float:
-    """(Final - Initial) / Initial"""
+def portfolio_return(equity: pd.Series) -> float:
     if len(equity) < 2:
         return 0.0
-    initial = float(equity.iloc[0])
-    final = float(equity.iloc[-1])
-    if initial == 0:
-        return np.nan
-    return (final - initial) / initial
+    a, b = float(equity.iloc[0]), float(equity.iloc[-1])
+    if a == 0:
+        return float("nan")
+    return (b - a) / a
 
 
-def max_drawdown(
-    equity: pd.Series
-) -> float:
-    """Return Max Drawdown as a positive fraction (e.g., 0.25 for -25%)."""
-    eq = equity.astype(float)
-    running_max = eq.cummax()
-    drawdown = (eq - running_max) / running_max
-    return abs(drawdown.min()) if len(eq) else 0.0
+def max_drawdown(equity: pd.Series) -> float:
+    run_max = equity.cummax()
+    dd = (equity - run_max) / run_max
+    return abs(dd.min()) if len(equity) else 0.0
 
 
 def sharpe_ratio(returns: pd.Series) -> float:
-    """Sharpe = mean(returns) / std(returns). If zero std, return 0."""
     mu = returns.mean()
     sigma = returns.std(ddof=1)
     return float(mu / sigma) if sigma and not np.isclose(sigma, 0.0) else 0.0
 
 
 def sortino_ratio(returns: pd.Series) -> float:
-    """Sortino = mean(returns) / std(negative_returns). If no negatives, return large number."""
     mu = returns.mean()
     neg = returns[returns < 0]
     if len(neg) == 0:
-        # No downside volatility → define Sortino as +inf; cap to a big number to keep scoring finite.
         return float("inf")
     sigma_d = neg.std(ddof=1)
     return float(mu / sigma_d) if sigma_d and not np.isclose(sigma_d, 0.0) else 0.0
 
 
-def calmar_ratio(returns: pd.Series, equity: Optional[pd.Series]=None) -> float:
-    """Calmar = mean(returns) / |Max Drawdown|. If MDD=0, return +inf."""
+def calmar_ratio(returns: pd.Series, equity: Optional[pd.Series] = None) -> float:
     mu = returns.mean()
     if equity is None:
         equity = (1 + returns).cumprod()
@@ -107,85 +80,212 @@ def calmar_ratio(returns: pd.Series, equity: Optional[pd.Series]=None) -> float:
     return float(mu / mdd)
 
 
-def evaluate_metrics(
-    series: pd.Series,
-    input_type: Literal["equity","returns"]="equity",
-    init_equity: float = 1.0
-) -> Dict[str, float]:
-    """
-    Compute all metrics and the composite score used for ranking:
-      Composite = 0.4*Sortino + 0.3*Sharpe + 0.3*Calmar
-    """
-    returns = _to_returns(series, input_type=input_type)
-    equity = _to_equity(series, input_type=input_type, init_equity=init_equity)
-
-    # Portfolio Return over the full window
-    port_ret = portfolio_return(equity)
-
-    # Risk ratios
-    sh = sharpe_ratio(returns)
-    so = sortino_ratio(returns)
-    ca = calmar_ratio(returns, equity=equity)
-
-    # Composite (finite-safe): treat inf as a large cap for scoring consistency
-    def _finite(x, cap=1e6):
+def composite_score(sortino: float, sharpe: float, calmar: float) -> float:
+    def finite(x, cap=1e6):
         if np.isinf(x):
             return cap * np.sign(x)
         if np.isnan(x):
             return 0.0
         return float(x)
+    return 0.4 * finite(sortino) + 0.3 * finite(sharpe) + 0.3 * finite(calmar)
 
-    composite = 0.4*_finite(so) + 0.3*_finite(sh) + 0.3*_finite(ca)
+
+# --------- Loading & Evaluation ---------
+
+def load_equity_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    ts_col = None
+    for c in ("timestamp", "time", "datetime", "date"):
+        if c in df.columns:
+            ts_col = c
+            break
+    if ts_col is not None:
+        df[ts_col] = pd.to_datetime(df[ts_col])
+        df = df.sort_values(ts_col).set_index(ts_col)
+    if "equity" not in df.columns:
+        if "equity_usdt" in df.columns:
+            df = df.rename(columns={"equity_usdt": "equity"})
+        else:
+            raise ValueError("CSV must contain 'equity' or 'equity_usdt' column.")
+    df["equity"] = df["equity"].astype(float)
+    return df[["equity"]]
+
+
+def load_orders_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.sort_values("timestamp")
+    return df
+
+
+def evaluate_equity_df(eq_df: pd.DataFrame) -> Dict[str, float]:
+    equity = eq_df["equity"]
+    rets = _to_returns(equity)
+
+    pr = portfolio_return(equity)
+    so = sortino_ratio(rets) if len(rets) else 0.0
+    sh = sharpe_ratio(rets) if len(rets) else 0.0
+    ca = calmar_ratio(rets, equity) if len(rets) else 0.0
+    mdd = max_drawdown(equity) if len(equity) else 0.0
+    comp = composite_score(so, sh, ca)
 
     return {
-        "portfolio_return": float(port_ret),
-        "sharpe": float(sh),
+        "portfolio_return": float(pr),
         "sortino": float(so),
+        "sharpe": float(sh),
         "calmar": float(ca),
-        "composite_score": float(composite),
-        "max_drawdown": float(max_drawdown(equity)),
-        "mean_return": float(returns.mean() if len(returns) else 0.0),
-        "std_return": float(returns.std(ddof=1) if len(returns) > 1 else 0.0),
-        "std_negative_return": float(returns[returns<0].std(ddof=1) if (returns<0).any() else 0.0),
+        "composite_score": float(comp),
+        "max_drawdown": float(mdd),
+        "mean_return": float(rets.mean() if len(rets) else 0.0),
+        "std_return": float(rets.std(ddof=1) if len(rets) > 1 else 0.0),
+        "std_negative_return": float(rets[rets<0].std(ddof=1) if (len(rets) and (rets<0).any()) else 0.0),
+        "n_points": int(len(equity))
     }
 
 
-# --- CLI-style helper for quick use on CSV logs ----------------------------
+def evaluate_orders_df(orders: pd.DataFrame) -> Dict[str, float]:
+    if orders is None or orders.empty:
+        return {
+            "trade_success_rate": float("nan"),
+            "avg_holding_minutes": float("nan"),
+            "cooldown_violations": 0,
+            "rate_limit_violations": 0,
+            "n_orders": 0
+        }
+    n_orders = len(orders)
+    succ = orders["status"].str.upper().eq("SUCCESS").sum() if "status" in orders.columns else n_orders
+    success_rate = succ / n_orders if n_orders else float("nan")
 
-def load_series_from_csv(
-    path: str,
-    column: str,
-    parse_dates: bool = True
-) -> pd.Series:
-    """
-    Load a time series column from CSV.
-    - `column` can be 'equity' or 'returns' (or any column name you choose).
-    - Assumes CSV has either an index-like datetime column or a 'timestamp' column.
-    """
-    df = pd.read_csv(path)
-    if parse_dates:
-        ts_col = None
-        for cand in ("timestamp", "time", "datetime", "date"):
-            if cand in df.columns:
-                ts_col = cand
-                break
-        if ts_col is not None:
-            df[ts_col] = pd.to_datetime(df[ts_col])
-            df = df.sort_values(ts_col).set_index(ts_col)
-    if column not in df.columns:
-        raise ValueError(f"Column '{column}' not found in CSV.")
-    return df[column].astype(float)
+    cooldown_viol = 0
+    rate_limit_viol = 0
+    if "timestamp" in orders.columns:
+        ts = pd.to_datetime(orders["timestamp"])
+        deltas = ts.diff().dt.total_seconds().dropna()
+        cooldown_viol = int((deltas < 540).sum())  # < 9 minutes
+        rate_limit_viol = int((deltas < 60).sum())  # < 1 minute
+
+    avg_hold = float("nan")
+    if {"action","timestamp"}.issubset(orders.columns):
+        buys = orders[orders["action"].str.upper().eq("BUY")].copy()
+        sells = orders[orders["action"].str.upper().eq("SELL")].copy()
+        if not buys.empty and not sells.empty:
+            if "pair" in orders.columns:
+                pairs = []
+                for sym, g in buys.groupby("pair"):
+                    bts = g["timestamp"].sort_values().tolist()
+                    sts = sells[sells["pair"]==sym]["timestamp"].sort_values().tolist()
+                    m = min(len(bts), len(sts))
+                    pairs += [(bts[i], sts[i]) for i in range(m)]
+                if pairs:
+                    avg_hold = float(np.mean([(s - b).total_seconds()/60.0 for b, s in pairs]))
+            else:
+                bts = buys["timestamp"].sort_values().tolist()
+                sts = sells["timestamp"].sort_values().tolist()
+                m = min(len(bts), len(sts))
+                if m>0:
+                    avg_hold = float(np.mean([(sts[i]-bts[i]).total_seconds()/60.0 for i in range(m)]))
+
+    return {
+        "trade_success_rate": float(success_rate),
+        "avg_holding_minutes": float(avg_hold) if not np.isnan(avg_hold) else float("nan"),
+        "cooldown_violations": int(cooldown_viol),
+        "rate_limit_violations": int(rate_limit_viol),
+        "n_orders": int(n_orders)
+    }
+
+
+def plot_nav(eq_df: pd.DataFrame, out_path: str) -> None:
+    y = eq_df["equity"].astype(float)
+    nav = y / y.iloc[0] if len(y) else pd.Series(dtype=float)
+    plt.figure(figsize=(8, 4.5))
+    plt.plot(nav.index, nav.values)
+    plt.title("NAV Curve (normalized)")
+    plt.xlabel("Time")
+    plt.ylabel("NAV")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=140)
+    plt.close()
+
+
+def plot_rolling_sharpe(eq_df: pd.DataFrame, out_path: str, window: int = 48) -> None:
+    r = _to_returns(eq_df["equity"])
+    rs = r.rolling(window).mean() / r.rolling(window).std(ddof=1)
+    plt.figure(figsize=(8, 4.5))
+    plt.plot(rs.index, rs.values)
+    plt.title(f"Rolling Sharpe (window={window})")
+    plt.xlabel("Time")
+    plt.ylabel("Sharpe")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=140)
+    plt.close()
+
+
+def plot_drawdown(eq_df: pd.DataFrame, out_path: str) -> None:
+    y = eq_df["equity"].astype(float)
+    run_max = y.cummax()
+    dd = (y - run_max) / run_max
+    plt.figure(figsize=(8, 4.5))
+    plt.plot(dd.index, dd.values)
+    plt.title("Drawdown")
+    plt.xlabel("Time")
+    plt.ylabel("Drawdown")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=140)
+    plt.close()
+
+
+def evaluate_portfolio(equity_csv: str,
+                       orders_csv: Optional[str] = None,
+                       outdir: str = "./out",
+                       rolling_window: int = 48) -> Dict[str, float]:
+    Path(outdir).mkdir(parents=True, exist_ok=True)
+    eq_df = load_equity_csv(equity_csv)
+    core = evaluate_equity_df(eq_df)
+
+    plot_nav(eq_df, str(Path(outdir) / "nav.png"))
+    plot_rolling_sharpe(eq_df, str(Path(outdir) / "rolling_sharpe.png"), window=rolling_window)
+    plot_drawdown(eq_df, str(Path(outdir) / "drawdown.png"))
+
+    extra = {}
+    if orders_csv is not None and Path(orders_csv).exists():
+        odf = load_orders_csv(orders_csv)
+        extra = evaluate_orders_df(odf)
+
+    metrics = {**core, **extra}
+    with open(Path(outdir) / "metrics.json", "w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+    return metrics
+
+
+def append_balance_snapshot(client, csv_path: str) -> None:
+    bal = client.balance()
+    for k in ("total_usdt_value", "equity_usdt", "equity", "total_usd"):
+        if k in bal:
+            equity_val = float(bal[k])
+            break
+    else:
+        raise KeyError("Could not find equity value key in balance() response.")
+    ts = pd.Timestamp.utcnow()
+    row = pd.DataFrame([{"timestamp": ts, "equity": equity_val}])
+    if Path(csv_path).exists():
+        row.to_csv(csv_path, mode="a", header=False, index=False)
+    else:
+        row.to_csv(csv_path, index=False)
+
+ 
+def _cli():
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--equity", required=True, help="Path to equity CSV (timestamp,equity or equity_usdt)")
+    p.add_argument("--orders", default=None, help="Optional orders CSV")
+    p.add_argument("--outdir", default="./out", help="Output directory for plots/metrics.json")
+    p.add_argument("--rolling", type=int, default=48, help="Rolling window (samples) for rolling sharpe")
+    args = p.parse_args()
+
+    metrics = evaluate_portfolio(args.equity, args.orders, args.outdir, args.rolling)
+    print(json.dumps(metrics, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser(description="Evaluate Hackathon Metrics from CSV")
-    p.add_argument("--csv", required=True, help="Path to CSV containing equity or returns")
-    p.add_argument("--column", required=True, help="Name of the column to read")
-    p.add_argument("--input_type", choices=["equity","returns"], default="equity")
-    args = p.parse_args()
-
-    s = load_series_from_csv(args.csv, args.column)
-    metrics = evaluate_metrics(s, input_type=args.input_type)
-    for k, v in metrics.items():
-        print(f"{k}: {v:.6f}")
+    _cli()
