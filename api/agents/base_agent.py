@@ -176,17 +176,60 @@ Based on this information, what trading action do you recommend? Provide your de
 
         # 请求 LLM 得到决策
         try:
-            llm_out = self.llm.chat(messages, temperature=0.3, max_tokens=256)
-            decision_text = llm_out.get("content") or "hold"
+            llm_out = self.llm.chat(messages, temperature=0.3, max_tokens=512)
+            decision_text = llm_out.get("content") or ""
+            
+            # 验证JSON格式（如果可能）
+            json_valid = self._validate_json_decision(decision_text)
+            if not json_valid:
+                print(f"[{self.name}] ⚠ WARNING: Decision may not be in JSON format:")
+                print(f"    {decision_text[:200]}...")
+                print(f"    System will attempt to parse, but JSON format is required.")
 
             decision = {
                 "agent": self.name,
                 "decision": decision_text,
                 "market_snapshot": self.last_market_snapshot,
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "json_valid": json_valid  # 标记JSON格式是否有效
             }
             self.bus.publish(self.decision_topic, decision)
             print(f"[{self.name}] Published decision: {decision_text[:100]}")
         except Exception as e:
             print(f"[{self.name}] Error generating decision: {e}")
+    
+    def _validate_json_decision(self, text: str) -> bool:
+        """
+        验证决策文本是否包含有效的JSON格式
+        
+        Returns:
+            True if JSON format detected, False otherwise
+        """
+        if not text:
+            return False
+        
+        import json
+        import re
+        
+        # 尝试提取JSON
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+        if json_match:
+            try:
+                json_str = json_match.group(0)
+                data = json.loads(json_str)
+                # 检查是否有必需的字段
+                if "action" in data:
+                    return True
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        # 尝试直接解析整个文本
+        try:
+            data = json.loads(text.strip())
+            if "action" in data:
+                return True
+        except (json.JSONDecodeError, ValueError):
+            pass
+        
+        return False
 

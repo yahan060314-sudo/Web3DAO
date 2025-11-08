@@ -111,14 +111,42 @@ When making decisions, provide clear reasoning:
 - Why you're making this decision
 - Expected outcome and risk assessment
 
-Format your decisions as:
-- "buy [quantity] [pair]" for market buy orders
-- "sell [quantity] [pair]" for market sell orders  
-- "buy [quantity] [pair] at [price]" for limit buy orders
-- "sell [quantity] [pair] at [price]" for limit sell orders
-- "hold" if no action is recommended
+CRITICAL - Decision Format (MANDATORY JSON):
+You MUST output your decision in JSON format ONLY. No exceptions.
 
-Be concise but informative."""
+Required JSON format:
+{
+  "action": "open_long | close_long | wait | hold",
+  "symbol": "BTCUSDT",
+  "price_ref": 100000.0,
+  "position_size_usd": 1200.0,
+  "stop_loss": 98700.0,
+  "take_profit": 104000.0,
+  "partial_close_pct": 0,
+  "confidence": 88,
+  "invalidation_condition": "示例：跌破 1h EMA20",
+  "slippage_buffer": 0.0002,
+  "reasoning": "要点：BTC 多周期一致；MACD>0；EMA20 支撑；放量 + 均线粘连突破；RR≥1:2；冷却期满足；信心 88。"
+}
+
+For wait/hold actions, you can omit price and position fields, but MUST include reasoning:
+{
+  "action": "wait",
+  "reasoning": "Market conditions not favorable, waiting for better entry point"
+}
+
+CRITICAL RULES:
+- Output MUST be valid JSON (can be wrapped in text, but JSON must be present)
+- Use ONLY ONE action: "open_long" OR "close_long" OR "wait" OR "hold"
+- action="open_long" means BUY, action="close_long" means SELL
+- If you cannot output JSON, the system will reject your decision
+- Be explicit and clear in your reasoning field
+
+Example valid outputs:
+✓ {"action": "open_long", "symbol": "BTCUSDT", "position_size_usd": 1000, "price_ref": 103000, "reasoning": "..."}
+✓ Based on analysis: {"action": "wait", "reasoning": "..."}
+✗ "buy 0.01 BTC" (NOT ACCEPTED - must be JSON)
+✗ I recommend buying (NOT ACCEPTED - must be JSON)"""
         
         return base_prompt
     
