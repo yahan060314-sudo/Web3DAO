@@ -21,6 +21,49 @@ AGENTS = [
     {"name": "agent2", "url": "http://localhost:8002/metrics"},
     {"name": "agent3", "url": "http://localhost:8003/metrics"},
 ]
+
+- If force is False and the DB already has any samples, operation is aborted.
+- If notify_agents is True, POSTs {"allocation": <amount>} to each agent base URL + notify_path.
+  (agents' AGENTS entries typically point to /metrics; this uses the base URL derived by trimming the last path segment)
+Returns (allocations, notify_results) where notify_results maps agent name -> result (status or error).
+"""
+agents =  AGENTS
+allocations = split_initial_investment(initial_amount, agents_list=agents, precision=precision)
+
+if not force and await db_has_any_samples():
+    raise RuntimeError("DB already contains samples. Use force=True to insert initial allocations anyway.")
+
+ts = int(datetime.utcnow().timestamp())
+for name, amount in allocations.items():
+    sample = {
+        "timestamp": ts,
+        "balance": amount,
+        "pl": 0.0,
+        "cumulative_pl": 0.0,
+        "trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "confidence": None,
+    }
+    await save_sample(name, sample)
+
+notify_results: Dict[str, Any] = {}
+if notify_agents:
+    async with aiohttp.ClientSession() as session:
+        for a in agents:
+            try:
+                base = a["url"].rsplit("/", 1)[0]  # crude base extraction
+                path = notify_path if notify_path.startswith("/") else f"/{notify_path}"
+                post_url = f"{base}{path}"
+                payload = {"allocation": allocations[a["name"]]}
+                async with session.post(post_url, json=payload, timeout=notify_timeout) as resp:
+                    notify_results[a["name"]] = {"status": resp.status, "text": await resp.text()}
+            except Exception as e:
+                notify_results[a["name"]] = {"error": str(e)}
+return allocations, notify_results
+
+
+
 POLL_INTERVAL = 10  # seconds
 DB_PATH = "trade_manager_monitor.db"
 SAMPLES_KEEP = 1000  # max samples to query for timeseries metrics
