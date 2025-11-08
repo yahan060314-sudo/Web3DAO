@@ -18,27 +18,38 @@ load_dotenv()
 
 API_KEY = os.getenv("ROOSTOO_API_KEY")
 SECRET_KEY = os.getenv("ROOSTOO_SECRET_KEY")
-BASE_URL = "https://mock-api.roostoo.com"
+# 支持通过环境变量配置API URL，默认使用mock API（用于测试）
+# 生产环境请设置 ROOSTOO_API_URL 为真实API地址
+BASE_URL = os.getenv("ROOSTOO_API_URL", "https://mock-api.roostoo.com")
 
 class RoostooClient:
     """
     Roostoo API的Python客户端，封装了所有端点的请求和认证逻辑。
     """
-    def __init__(self, api_key: str = API_KEY, secret_key: str = SECRET_KEY):
+    def __init__(self, api_key: str = API_KEY, secret_key: str = SECRET_KEY, base_url: str = None):
         """
         初始化客户端。
 
         Args:
             api_key (str): 您的Roostoo API Key。
             secret_key (str): 您的Roostoo Secret Key。
+            base_url (str, optional): API基础URL。如果为None，使用环境变量ROOSTOO_API_URL或默认值。
         """
         if not api_key or not secret_key:
             raise ValueError("API Key和Secret Key不能为空。请检查您的.env文件或初始化参数。")
-            
-        self.base_url = BASE_URL
+        
+        # 支持通过参数或环境变量配置base_url
+        self.base_url = base_url or BASE_URL
         self.api_key = api_key
         self.secret_key = secret_key
         self.session = requests.Session()
+        
+        # 打印当前使用的API URL（用于确认）
+        if "mock" in self.base_url.lower():
+            print(f"[RoostooClient] ⚠️ 使用模拟API: {self.base_url}")
+            print(f"[RoostooClient] 如需使用真实API，请在.env中设置 ROOSTOO_API_URL")
+        else:
+            print(f"[RoostooClient] ✓ 使用真实API: {self.base_url}")
 
     def _get_timestamp(self) -> str:
         """生成13位毫秒级时间戳字符串。"""
