@@ -267,19 +267,22 @@ What opportunities do you see?"""
             return None
         
         try:
-            return self.spot_trading_template.format(
-                date=date,
-                account_equity=account_equity,
-                available_cash=available_cash,
-                positions=positions,
-                price_series=price_series,
-                volume_series=volume_series,
-                recent_sharpe=recent_sharpe,
-                trade_stats=trade_stats,
-                STOP_SIGNAL=stop_signal
-            )
-        except KeyError as e:
-            print(f"[PromptManager] Error formatting spot trading prompt: missing key {e}")
+            # 使用简单的字符串替换（避免JSON示例中的花括号被format()误解析）
+            # 这样可以保留模板中JSON示例的原始格式
+            result = self.spot_trading_template
+            result = result.replace('{date}', date)
+            result = result.replace('{account_equity}', account_equity)
+            result = result.replace('{available_cash}', available_cash)
+            result = result.replace('{positions}', positions)
+            result = result.replace('{price_series}', price_series)
+            result = result.replace('{volume_series}', volume_series)
+            result = result.replace('{recent_sharpe}', recent_sharpe)
+            result = result.replace('{trade_stats}', trade_stats)
+            result = result.replace('{STOP_SIGNAL}', stop_signal)
+            
+            return result
+        except Exception as e:
+            print(f"[PromptManager] Error formatting spot trading prompt: {e}")
             return None
     
     def create_spot_prompt_from_market_data(

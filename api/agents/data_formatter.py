@@ -43,45 +43,84 @@ class DataFormatter:
             "raw": raw_ticker  # 保留原始数据
         }
         
-        # 尝试从不同可能的响应结构中提取数据
-        data = raw_ticker.get("data", raw_ticker)
+        # Roostoo API返回格式: {'Success': True, 'Data': {'BTC/USD': {...}}}
+        # 需要处理嵌套结构
+        data = raw_ticker.get("Data", raw_ticker.get("data", raw_ticker))
         
-        # 提取交易对信息
-        if pair:
-            formatted["pair"] = pair
-        elif "pair" in data:
-            formatted["pair"] = data["pair"]
-        elif "symbol" in data:
-            formatted["pair"] = data["symbol"]
+        # 如果data是字典且包含交易对作为key（如 {'BTC/USD': {...}}）
+        # 需要提取交易对的数据
+        pair_data = None
+        if isinstance(data, dict):
+            # 检查是否是嵌套结构：data = {'BTC/USD': {...}}
+            if pair and pair in data:
+                pair_data = data[pair]
+                formatted["pair"] = pair
+            elif len(data) == 1 and isinstance(list(data.values())[0], dict):
+                # 只有一个key，且value是字典，可能是交易对数据
+                pair_key = list(data.keys())[0]
+                pair_data = data[pair_key]
+                formatted["pair"] = pair_key
+            else:
+                # 直接使用data
+                pair_data = data
+                if pair:
+                    formatted["pair"] = pair
+                elif "pair" in data:
+                    formatted["pair"] = data["pair"]
+                elif "symbol" in data:
+                    formatted["pair"] = data["symbol"]
+        else:
+            pair_data = data
         
-        # 提取价格信息
-        if "price" in data:
-            formatted["price"] = float(data["price"])
-        elif "lastPrice" in data:
-            formatted["price"] = float(data["lastPrice"])
-        elif "close" in data:
-            formatted["price"] = float(data["close"])
-        
-        # 提取24小时数据
-        if "volume24h" in data:
-            formatted["volume_24h"] = float(data["volume24h"])
-        elif "volume" in data:
-            formatted["volume_24h"] = float(data["volume"])
-        
-        if "change24h" in data:
-            formatted["change_24h"] = float(data["change24h"])
-        elif "priceChangePercent" in data:
-            formatted["change_24h"] = float(data["priceChangePercent"])
-        
-        if "high24h" in data:
-            formatted["high_24h"] = float(data["high24h"])
-        elif "high" in data:
-            formatted["high_24h"] = float(data["high"])
-        
-        if "low24h" in data:
-            formatted["low_24h"] = float(data["low24h"])
-        elif "low" in data:
-            formatted["low_24h"] = float(data["low"])
+        # 从pair_data中提取价格信息
+        if pair_data:
+            # 提取价格信息（Roostoo使用LastPrice）
+            if "LastPrice" in pair_data:
+                formatted["price"] = float(pair_data["LastPrice"])
+            elif "price" in pair_data:
+                formatted["price"] = float(pair_data["price"])
+            elif "lastPrice" in pair_data:
+                formatted["price"] = float(pair_data["lastPrice"])
+            elif "close" in pair_data:
+                formatted["price"] = float(pair_data["close"])
+            
+            # 提取24小时数据
+            # Roostoo可能使用CoinTradeValue作为成交量
+            if "UnitTradeValue" in pair_data:
+                formatted["volume_24h"] = float(pair_data["UnitTradeValue"])
+            elif "CoinTradeValue" in pair_data:
+                formatted["volume_24h"] = float(pair_data["CoinTradeValue"])
+            elif "volume24h" in pair_data:
+                formatted["volume_24h"] = float(pair_data["volume24h"])
+            elif "volume" in pair_data:
+                formatted["volume_24h"] = float(pair_data["volume"])
+            
+            # 提取涨跌幅（Roostoo使用Change，可能是小数形式如0.0189表示1.89%）
+            if "Change" in pair_data:
+                change_value = float(pair_data["Change"])
+                # 如果是小数形式（如0.0189），转换为百分比
+                if abs(change_value) < 1:
+                    formatted["change_24h"] = change_value * 100
+                else:
+                    formatted["change_24h"] = change_value
+            elif "change24h" in pair_data:
+                formatted["change_24h"] = float(pair_data["change24h"])
+            elif "priceChangePercent" in pair_data:
+                formatted["change_24h"] = float(pair_data["priceChangePercent"])
+            
+            # 提取最高价和最低价（Roostoo使用MaxBid和MinAsk）
+            if "MaxBid" in pair_data and "MinAsk" in pair_data:
+                formatted["high_24h"] = max(float(pair_data["MaxBid"]), float(pair_data["MinAsk"]))
+                formatted["low_24h"] = min(float(pair_data["MaxBid"]), float(pair_data["MinAsk"]))
+            elif "high24h" in pair_data:
+                formatted["high_24h"] = float(pair_data["high24h"])
+            elif "high" in pair_data:
+                formatted["high_24h"] = float(pair_data["high"])
+            
+            if "low24h" in pair_data:
+                formatted["low_24h"] = float(pair_data["low24h"])
+            elif "low" in pair_data:
+                formatted["low_24h"] = float(pair_data["low"])
         
         return formatted
     
@@ -107,25 +146,52 @@ class DataFormatter:
             "raw": raw_balance
         }
         
+        # Roostoo API返回格式: {'Success': True, 'SpotWallet': {'USD': {'Free': 50000, 'Lock': 0}}, ...}
         data = raw_balance.get("data", raw_balance)
         
-        # 提取总余额和可用余额
-        if "totalBalance" in data:
-            formatted["total_balance"] = float(data["totalBalance"])
-        if "availableBalance" in data:
-            formatted["available_balance"] = float(data["availableBalance"])
-        
-        # 提取各币种余额
-        currencies = {}
-        if "balances" in data:
-            for balance_item in data["balances"]:
-                currency = balance_item.get("currency", "UNKNOWN")
-                currencies[currency] = {
-                    "available": float(balance_item.get("available", 0)),
-                    "locked": float(balance_item.get("locked", 0)),
-                    "total": float(balance_item.get("total", 0))
-                }
-        formatted["currencies"] = currencies
+        # 处理Roostoo的SpotWallet格式
+        spot_wallet = data.get("SpotWallet", {})
+        if spot_wallet:
+            currencies = {}
+            total_balance = 0.0
+            available_balance = 0.0
+            
+            for currency, wallet_info in spot_wallet.items():
+                if isinstance(wallet_info, dict):
+                    free = float(wallet_info.get("Free", 0))
+                    locked = float(wallet_info.get("Lock", 0))
+                    total = free + locked
+                    
+                    currencies[currency] = {
+                        "available": free,
+                        "locked": locked,
+                        "total": total
+                    }
+                    
+                    total_balance += total
+                    available_balance += free
+            
+            formatted["currencies"] = currencies
+            formatted["total_balance"] = total_balance
+            formatted["available_balance"] = available_balance
+        else:
+            # 尝试其他格式
+            if "totalBalance" in data:
+                formatted["total_balance"] = float(data["totalBalance"])
+            if "availableBalance" in data:
+                formatted["available_balance"] = float(data["availableBalance"])
+            
+            # 提取各币种余额（其他格式）
+            currencies = {}
+            if "balances" in data:
+                for balance_item in data["balances"]:
+                    currency = balance_item.get("currency", "UNKNOWN")
+                    currencies[currency] = {
+                        "available": float(balance_item.get("available", 0)),
+                        "locked": float(balance_item.get("locked", 0)),
+                        "total": float(balance_item.get("total", 0))
+                    }
+            formatted["currencies"] = currencies
         
         return formatted
     
