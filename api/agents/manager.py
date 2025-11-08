@@ -5,6 +5,32 @@ from typing import List, Dict, Any
 from .bus import MessageBus
 from .base_agent import BaseAgent
 
+from agent_manager_plus import AgentManager
+
+mgr = AgentManager(log_dir="./logs")
+mgr.add_agent("A", system_prompt_a)
+mgr.add_agent("B", system_prompt_b)
+mgr.add_agent("C", system_prompt_c)
+mgr.start()
+
+# 1) Split initial bankroll equally
+alloc = mgr.split_initial_capital(total_usd=9000.0)
+# e.g., {"A": 3000.0, "B": 3000.0, "C": 3000.0}
+
+# 2) During the day, your executor publishes fills to the bus:
+#    mgr.bus.publish(mgr.execution_topic, <dict compatible with ExecutionEvent>)
+# Example:
+mgr.bus.publish(mgr.execution_topic, {
+    "agent": "A", "symbol": "BTC/USD", "side": "BUY",
+    "qty": 0.01, "price": 100000.0, "fee": 0.1,
+    "ts": time.time(), "order_id": "oid123", "pnl_usd": 0.0, "tag": "volume_spike+ma_squeeze"
+})
+
+# 3) End of day: roll up & broadcast learning prompt
+summary = mgr.daily_rollup_and_prompt()   # writes ./logs/executions_YYYY-MM-DD.csv & daily_summary_YYYY-MM-DD.json
+
+
+
 
 class AgentManager:
     """
