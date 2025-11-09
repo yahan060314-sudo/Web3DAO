@@ -22,7 +22,7 @@ class MiniMaxClient(LLMClient):
         self.group_id = group_id or os.getenv("MINIMAX_GROUP_ID", "")
         self.base_url = base_url or os.getenv("MINIMAX_BASE_URL", "https://api.minimax.chat/v1")
         # 修正模型名称
-        self.default_model = default_model or os.getenv("MINIMAX_MODEL", "mini-max-2")
+        self.default_model = default_model or os.getenv("MINIMAX_MODEL", "MiniMax-M2")
         self.timeout_seconds = timeout_seconds
 
         if not self.api_key:
