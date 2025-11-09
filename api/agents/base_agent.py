@@ -6,6 +6,10 @@ from api.llm_clients.factory import get_llm_client
 from .bus import MessageBus, Subscription
 from .data_formatter import DataFormatter
 
+#minimax用的
+import json
+import re
+
 
 class BaseAgent(threading.Thread):
     """
@@ -20,6 +24,120 @@ class BaseAgent(threading.Thread):
     - 支持结构化的市场数据（ticker、balance等）
     - 更好的数据聚合和上下文管理
     """
+
+    #以下是minimax用的
+    def _generate_decision(self, user_prompt: str) -> None:
+        """生成交易决策（添加 MiniMax JSON 修复）"""
+        try:
+            # 构建消息
+            messages = self._build_messages(user_prompt)
+            
+            # 调用 LLM
+            result = self.llm.chat(messages, temperature=0.3, max_tokens=512)
+            raw_content = result.get("content", "").strip()
+            
+            print(f"[{self.name}] LLM 原始响应: {raw_content[:200]}...")
+            
+            # 尝试解析 JSON（添加修复逻辑）
+            decision_data = self._parse_and_fix_decision(raw_content)
+            
+            if decision_data:
+                # 发布决策
+                decision_msg = {
+                    "agent": self.name,
+                    "decision": decision_data,
+                    "market_snapshot": self.market_snapshot,
+                    "timestamp": time.time(),
+                    "json_valid": True
+                }
+                self.bus.publish(topic=self.decision_topic, message=decision_msg)
+                print(f"[{self.name}] Published decision: {decision_data}")
+            else:
+                # 如果无法解析，发布警告
+                warning_msg = {
+                    "agent": self.name,
+                    "decision": raw_content,
+                    "market_snapshot": self.market_snapshot,
+                    "timestamp": time.time(),
+                    "json_valid": False
+                }
+                self.bus.publish(topic=self.decision_topic, message=warning_msg)
+                print(f"[{self.name}] ⚠ WARNING: Decision may not be in JSON format: {raw_content[:100]}...")
+                
+        except Exception as e:
+            print(f"[{self.name}] Error generating decision: {e}")
+    
+    def _parse_and_fix_decision(self, raw_text: str) -> Optional[Dict]:
+        """解析和修复 MiniMax 的 JSON 决策输出"""
+        if not raw_text:
+            return None
+            
+        # 方法1: 直接解析 JSON
+        try:
+            return json.loads(raw_text.strip())
+        except:
+            pass
+        
+        # 方法2: 提取 JSON 部分
+        json_match = re.search(r'\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}', raw_text, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(0))
+            except:
+                pass
+        
+        # 方法3: 为 MiniMax 专门修复 - 处理自然语言输出
+        return self._fix_minimax_natural_language(raw_text)
+    
+    def _fix_minimax_natural_language(self, text: str) -> Optional[Dict]:
+        """修复 MiniMax 的自然语言输出，转换为 JSON 格式"""
+        text_lower = text.lower()
+        
+        # 检测动作关键词
+        action = "wait"
+        if any(word in text_lower for word in ["buy", "开多", "open_long", "买入", "做多"]):
+            action = "open_long"
+        elif any(word in text_lower for word in ["sell", "平多", "close_long", "卖出", "平仓"]):
+            action = "close_long"
+        elif any(word in text_lower for word in ["hold", "持有", "保持"]):
+            action = "hold"
+        
+        # 检测交易对符号
+        symbol = "BTCUSDT"  # 默认
+        symbol_match = re.search(r'(BTC|ETH|BNB|ADA|DOT|LINK|LTC|BCH|XRP|EOS)[A-Z]*', text.upper())
+        if symbol_match:
+            symbol = symbol_match.group(0) + "USDT"
+        
+        # 检测信心值
+        confidence = 50  # 默认
+        confidence_match = re.search(r'(\d+)%', text)
+        if confidence_match:
+            confidence = min(100, max(0, int(confidence_match.group(1))))
+        else:
+            # 根据关键词估算信心值
+            if any(word in text_lower for word in ["高信心", "强烈", "definitely", "sure"]):
+                confidence = 80
+            elif any(word in text_lower for word in ["中等", "可能", "probably", "likely"]):
+                confidence = 60
+            elif any(word in text_lower for word in ["低信心", "不确定", "unsure", "maybe"]):
+                confidence = 40
+        
+        # 构建修复后的 JSON 决策
+        return {
+            "action": action,
+            "symbol": symbol,
+            "reasoning": text[:300],  # 截取前300字符作为理由
+            "confidence": confidence,
+            "price_ref": 0,
+            "position_size_usd": 0,
+            "stop_loss": 0,
+            "take_profit": 0,
+            "partial_close_pct": 0,
+            "invalidation_condition": "自动修复的决策",
+            "slippage_buffer": 0.0005,
+            "_repaired": True  # 标记这是修复后的决策
+        }
+        #以上是minimax用的
 
     def __init__(self,
                  name: str,
