@@ -1,4 +1,4 @@
-cat > minimax_agent_fixed.py << 'EOF'
+
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -97,4 +97,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-EOF
