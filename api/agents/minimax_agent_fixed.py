@@ -98,5 +98,3 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
-
-python minimax_agent_fixed.py
