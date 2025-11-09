@@ -1,5 +1,3 @@
-# 创建修正版的 MiniMax 客户端
-cat > api/llm_clients/minimax_client_fixed.py << 'EOF'
 import os
 import requests
 from typing import List, Dict, Any, Optional
