@@ -4,7 +4,7 @@ from typing import Optional
 from .base import LLMClient # 导入接口
 from .deepseek_client import DeepSeekClient # 导入具体实现A
 from .qwen_client import QwenClient # 导入具体实现B
-from .minimax_client import MiniMaxClient # 导入具体实现C 
+
 
 # 确保在读取环境变量之前尝试加载 .env（如果存在）
 try:
@@ -29,7 +29,7 @@ def get_llm_client(provider: Optional[str] = None) -> LLMClient:
     """
     根据环境变量 LLM_PROVIDER 或传入的 provider 参数，
     选择并初始化一个具体的LLM客户端。
-    支持的提供商: "deepseek", "qwen", "minimax".  # 更新文档
+
     """
     # 决定使用哪个provider。优先使用函数参数，其次是环境变量，最后默认"deepseek"。
     # .lower()确保了配置不区分大小写（如"DeepSeek"也能正常工作）。
@@ -40,8 +40,6 @@ def get_llm_client(provider: Optional[str] = None) -> LLMClient:
         return DeepSeekClient() # 如果是deepseek，就创建并返回一个DeepSeekClient实例。
     if chosen == "qwen":
         return QwenClient() # 如果是qwen，就创建并返回一个QwenClient实例。
-    if chosen == "minimax":  # 新增 MiniMax 支持
-        return MiniMaxClient() # 如果是minimax，就创建并返回一个MiniMaxClient实例。
 
     # 如果配置了一个不支持的provider，则抛出错误。
     raise ValueError(f"Unsupported LLM_PROVIDER: {chosen}")
