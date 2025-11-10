@@ -26,52 +26,11 @@ class BaseAgent(threading.Thread):
     """
 
     #以下是minimax用的
-    def _generate_decision(self, user_prompt: str) -> None:
-        """生成交易决策（添加 MiniMax JSON 修复）"""
-        try:
-            # 构建消息
-            messages = self._build_messages(user_prompt)
-            
-            # 调用 LLM
-            result = self.llm.chat(messages, temperature=0.3, max_tokens=512)
-            raw_content = result.get("content", "").strip()
-            
-            print(f"[{self.name}] LLM 原始响应: {raw_content[:200]}...")
-            
-            # 尝试解析 JSON（添加修复逻辑）
-            decision_data = self._parse_and_fix_decision(raw_content)
-            
-            if decision_data:
-                # 发布决策
-                decision_msg = {
-                    "agent": self.name,
-                    "decision": decision_data,
-                    "market_snapshot": self.market_snapshot,
-                    "timestamp": time.time(),
-                    "json_valid": True
-                }
-                self.bus.publish(topic=self.decision_topic, message=decision_msg)
-                print(f"[{self.name}] Published decision: {decision_data}")
-            else:
-                # 如果无法解析，发布警告
-                warning_msg = {
-                    "agent": self.name,
-                    "decision": raw_content,
-                    "market_snapshot": self.market_snapshot,
-                    "timestamp": time.time(),
-                    "json_valid": False
-                }
-                self.bus.publish(topic=self.decision_topic, message=warning_msg)
-                print(f"[{self.name}] ⚠ WARNING: Decision may not be in JSON format: {raw_content[:100]}...")
-                
-        except Exception as e:
-            print(f"[{self.name}] Error generating decision: {e}")
-    
     def _parse_and_fix_decision(self, raw_text: str) -> Optional[Dict]:
         """解析和修复 MiniMax 的 JSON 决策输出"""
         if not raw_text:
             return None
-            
+   
         # 方法1: 直接解析 JSON
         try:
             return json.loads(raw_text.strip())
@@ -268,9 +227,9 @@ Based on this information, what trading action do you recommend? Provide your de
 
 
     #以下是改动
-    def _generate_decision(self, user_prompt: str) -> None:
+   def _generate_decision(self, user_prompt: str) -> None:
         """
-        生成交易决策的核心方法 - 增强版（添加文件保存）
+        生成交易决策的核心方法 - 增强版（添加文件保存和 MiniMax JSON 修复）
         """
         # === 添加缺失的 messages 构建代码 ===
         # 构建 LLM 输入：系统提示 + 对话历史 + 市场数据
@@ -325,23 +284,38 @@ Based on this information, what trading action do you recommend? Provide your de
                 # 即使文件保存失败，也继续执行原有逻辑
             # === 新增结束 ===
     
-            # 验证JSON格式（如果可能）
-            json_valid = self._validate_json_decision(decision_text)
-            if not json_valid:
-                print(f"[{self.name}] ⚠ WARNING: Decision may not be in JSON format:")
-                print(f"    {decision_text[:200]}...")
-                print(f"    System will attempt to parse, but JSON format is required.")
-    
-            decision = {
-                "agent": self.name,
-                "decision": decision_text,
-                "market_snapshot": self.last_market_snapshot,
-                "timestamp": time.time(),
-                "json_valid": json_valid,  # 标记JSON格式是否有效
-                "file_path": file_path    # 新增：文件路径信息
-            }
-            self.bus.publish(self.decision_topic, decision)
-            print(f"[{self.name}] Published decision: {decision_text[:100]}")
+            # === 新增：MiniMax JSON 修复逻辑 ===
+            decision_data = None
+            if decision_text:
+                # 尝试解析 JSON（添加修复逻辑）
+                decision_data = self._parse_and_fix_decision(decision_text)
+            
+            if decision_data:
+                # 发布修复后的决策
+                decision_msg = {
+                    "agent": self.name,
+                    "decision": decision_data,
+                    "market_snapshot": self.last_market_snapshot,
+                    "timestamp": time.time(),
+                    "json_valid": True,
+                    "file_path": file_path
+                }
+                self.bus.publish(topic=self.decision_topic, message=decision_msg)
+                print(f"[{self.name}] Published decision: {decision_data}")
+            else:
+                # 如果无法解析，发布警告
+                warning_msg = {
+                    "agent": self.name,
+                    "decision": decision_text,
+                    "market_snapshot": self.last_market_snapshot,
+                    "timestamp": time.time(),
+                    "json_valid": False,
+                    "file_path": file_path
+                }
+                self.bus.publish(topic=self.decision_topic, message=warning_msg)
+                print(f"[{self.name}] ⚠ WARNING: Decision may not be in JSON format: {decision_text[:100]}...")
+            # === MiniMax JSON 修复逻辑结束 ===
+                
         except Exception as e:
             print(f"[{self.name}] Error generating decision: {e}")
     
