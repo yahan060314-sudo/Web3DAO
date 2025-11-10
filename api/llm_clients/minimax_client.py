@@ -1,11 +1,15 @@
 import os
 import requests
 from typing import List, Dict, Any, Optional
+from dotenv import load_dotenv  # 新增
 from .base import LLMClient
 
-class MiniMaxClient(LLMClient):
+# 加载 .env 文件
+load_dotenv()
+
+class MiniMaxClientFinal(LLMClient):
     """
-    修正版的 MiniMax 客户端 - 修复消息格式问题
+    最终修正版 MiniMax 客户端 - 自动加载 .env 文件
     """
 
     def __init__(self,
@@ -15,16 +19,24 @@ class MiniMaxClient(LLMClient):
                  group_id: Optional[str] = None,
                  timeout_seconds: int = 30):
         
+        # 强制重新加载环境变量
+        load_dotenv(override=True)
+        
         self.api_key = api_key or os.getenv("MINIMAX_API_KEY")
         self.group_id = group_id or os.getenv("MINIMAX_GROUP_ID", "")
         self.base_url = base_url or os.getenv("MINIMAX_BASE_URL", "https://api.minimax.chat/v1")
-        self.default_model = default_model or os.getenv("MINIMAX_MODEL", "abab6.5-chat")
+        self.default_model = default_model or os.getenv("MINIMAX_MODEL", "MiniMax-M2")
         self.timeout_seconds = timeout_seconds
 
+        print(f"[MiniMax] 配置检查:")
+        print(f"  API Key: {'✅' if self.api_key else '❌'}")
+        print(f"  Group ID: {self.group_id}")
+        print(f"  Model: {self.default_model}")
+
         if not self.api_key:
-            raise ValueError("MINIMAX_API_KEY not set")
+            raise ValueError("MINIMAX_API_KEY not set in environment")
         if not self.group_id:
-            raise ValueError("MINIMAX_GROUP_ID not set")
+            raise ValueError("MINIMAX_GROUP_ID not set in environment")
 
         self.session = requests.Session()
         self.session.headers.update({
@@ -38,20 +50,10 @@ class MiniMaxClient(LLMClient):
              max_tokens: Optional[int] = None,
              extra_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         
-        # 转换为 MiniMax 格式
-        minimax_messages = self._convert_messages(messages)
-        
-        # 构建请求数据 - 使用正确的格式
+        # 使用兼容格式
         payload = {
             "model": model or self.default_model,
-            "messages": minimax_messages,
-            "bot_setting": [
-                {
-                    "bot_name": "Trading Assistant",
-                    "content": "你是一个专业的加密货币交易助手，必须用JSON格式输出交易决策。"
-                }
-            ],
-            "reply_constraints": {"sender_type": "BOT", "sender_name": "Trading Assistant"},
+            "messages": self._format_messages_simple(messages),
             "group_id": self.group_id
         }
 
@@ -59,21 +61,19 @@ class MiniMaxClient(LLMClient):
         if temperature is not None:
             payload["temperature"] = max(0.01, min(1.0, temperature))
         if max_tokens is not None:
-            payload["max_tokens"] = max_tokens  # 注意：这里改为 max_tokens
-        if extra_params:
-            payload.update(extra_params)
+            payload["max_tokens"] = max_tokens
 
         url = f"{self.base_url.rstrip('/')}/text/chatcompletion_v2"
 
         try:
             print(f"[MiniMax] 发送请求到: {url}")
-            print(f"[MiniMax] 消息数量: {len(minimax_messages)}")
+            print(f"[MiniMax] 使用模型: {payload['model']}")
             
             resp = self.session.post(url, json=payload, timeout=self.timeout_seconds)
+            print(f"[MiniMax] 响应状态码: {resp.status_code}")
+            
             resp.raise_for_status()
             data = resp.json()
-            
-            print(f"[MiniMax] 原始响应状态: {data.get('base_resp', {})}")
             
             content = self._parse_response(data)
             return {"content": content, "raw": data}
@@ -81,62 +81,41 @@ class MiniMaxClient(LLMClient):
         except Exception as e:
             print(f"MiniMax API Error: {e}")
             if 'resp' in locals():
-                print(f"响应状态码: {resp.status_code}")
                 try:
-                    print(f"响应内容: {resp.text}")
+                    error_detail = resp.json()
+                    print(f"错误详情: {error_detail}")
                 except:
-                    pass
+                    print(f"响应文本: {resp.text[:200]}...")
             return {"content": None, "raw": None, "error": str(e)}
 
-    def _convert_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def _format_messages_simple(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
-        修正消息格式转换 - 解决 "invalid role" 错误
+        使用最简单的消息格式
         """
-        minimax_messages = []
+        formatted_messages = []
         
         for msg in messages:
-            role = msg.get("role", "").lower()
+            role = msg.get("role", "user").lower()
             content = msg.get("content", "").strip()
             
             if not content:
                 continue
                 
-            # MiniMax 只接受特定的 sender_type 值
-            # 根据官方文档，应该是 "USER" 或 "BOT"
-            if role in ["user", "system"]:
-                sender_type = "USER"
-                sender_name = "User"
-            elif role == "assistant":
-                sender_type = "BOT" 
-                sender_name = "Assistant"
-            else:
-                # 未知角色默认设为 USER
-                sender_type = "USER"
-                sender_name = "User"
-                
-            minimax_messages.append({
-                "sender_type": sender_type,
-                "sender_name": sender_name,
+            # 最简单的格式
+            formatted_msg = {
+                "sender_type": "USER" if role in ["user", "system"] else "BOT",
                 "text": content
-            })
+            }
+            formatted_messages.append(formatted_msg)
         
-        # 确保至少有一条消息
-        if not minimax_messages:
-            minimax_messages.append({
-                "sender_type": "USER",
-                "sender_name": "User", 
-                "text": "Hello"
-            })
-            
-        print(f"[MiniMax] 转换后的消息: {minimax_messages}")
-        return minimax_messages
+        print(f"[MiniMax] 格式化消息: {formatted_messages}")
+        return formatted_messages
 
     def _parse_response(self, data: Dict[str, Any]) -> Optional[str]:
         """
-        修正响应解析逻辑
+        解析响应
         """
         try:
-            # 检查基础响应状态
             base_resp = data.get("base_resp", {})
             status_code = base_resp.get("status_code")
             
@@ -145,23 +124,20 @@ class MiniMaxClient(LLMClient):
                 print(f"[MiniMax] API 错误 {status_code}: {error_msg}")
                 return None
             
-            # 解析回复内容 - 根据 MiniMax 官方文档格式
-            choices = data.get("choices", [])
-            if choices and len(choices) > 0:
-                # MiniMax 的回复在 choices[0].text
-                reply = choices[0].get("text", "").strip()
-                if reply:
-                    print(f"[MiniMax] 从 choices 解析到回复: {reply[:100]}...")
-                    return reply
-            
-            # 备用解析方式
-            if "reply" in data:
-                reply = data.get("reply", "").strip()
-                if reply:
-                    print(f"[MiniMax] 从 reply 字段解析到: {reply[:100]}...")
-                    return reply
+            # 解析回复内容
+            if "choices" in data and data["choices"]:
+                choice = data["choices"][0]
+                if "message" in choice:
+                    content = choice["message"].get("content", "").strip()
+                elif "text" in choice:
+                    content = choice["text"].strip()
+                else:
+                    content = str(choice).strip()
                 
-            print("[MiniMax] 未找到有效回复内容")
+                if content:
+                    print(f"[MiniMax] 解析到内容: {content[:100]}...")
+                    return content
+            
             return None
             
         except Exception as e:
