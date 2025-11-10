@@ -5,7 +5,7 @@ from .base import LLMClient
 
 class MiniMaxClient(LLMClient):
     """
-    修正版的 MiniMax 客户端
+    修正版的 MiniMax 客户端 - 修复消息格式问题
     """
 
     def __init__(self,
@@ -41,7 +41,7 @@ class MiniMaxClient(LLMClient):
         # 转换为 MiniMax 格式
         minimax_messages = self._convert_messages(messages)
         
-        # 构建请求数据
+        # 构建请求数据 - 使用正确的格式
         payload = {
             "model": model or self.default_model,
             "messages": minimax_messages,
@@ -59,7 +59,7 @@ class MiniMaxClient(LLMClient):
         if temperature is not None:
             payload["temperature"] = max(0.01, min(1.0, temperature))
         if max_tokens is not None:
-            payload["tokens_to_generate"] = max_tokens
+            payload["max_tokens"] = max_tokens  # 注意：这里改为 max_tokens
         if extra_params:
             payload.update(extra_params)
 
@@ -67,13 +67,13 @@ class MiniMaxClient(LLMClient):
 
         try:
             print(f"[MiniMax] 发送请求到: {url}")
-            print(f"[MiniMax] 请求载荷: {payload}")
+            print(f"[MiniMax] 消息数量: {len(minimax_messages)}")
             
             resp = self.session.post(url, json=payload, timeout=self.timeout_seconds)
             resp.raise_for_status()
             data = resp.json()
             
-            print(f"[MiniMax] 原始响应: {data}")
+            print(f"[MiniMax] 原始响应状态: {data.get('base_resp', {})}")
             
             content = self._parse_response(data)
             return {"content": content, "raw": data}
@@ -82,12 +82,15 @@ class MiniMaxClient(LLMClient):
             print(f"MiniMax API Error: {e}")
             if 'resp' in locals():
                 print(f"响应状态码: {resp.status_code}")
-                print(f"响应内容: {resp.text}")
+                try:
+                    print(f"响应内容: {resp.text}")
+                except:
+                    pass
             return {"content": None, "raw": None, "error": str(e)}
 
     def _convert_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
-        安全的消息格式转换
+        修正消息格式转换 - 解决 "invalid role" 错误
         """
         minimax_messages = []
         
@@ -98,17 +101,22 @@ class MiniMaxClient(LLMClient):
             if not content:
                 continue
                 
-            # MiniMax 的消息格式
+            # MiniMax 只接受特定的 sender_type 值
+            # 根据官方文档，应该是 "USER" 或 "BOT"
             if role in ["user", "system"]:
                 sender_type = "USER"
+                sender_name = "User"
             elif role == "assistant":
-                sender_type = "BOT"
+                sender_type = "BOT" 
+                sender_name = "Assistant"
             else:
-                sender_type = "USER"  # 默认
+                # 未知角色默认设为 USER
+                sender_type = "USER"
+                sender_name = "User"
                 
             minimax_messages.append({
                 "sender_type": sender_type,
-                "sender_name": "User" if sender_type == "USER" else "Assistant",
+                "sender_name": sender_name,
                 "text": content
             })
         
@@ -120,6 +128,7 @@ class MiniMaxClient(LLMClient):
                 "text": "Hello"
             })
             
+        print(f"[MiniMax] 转换后的消息: {minimax_messages}")
         return minimax_messages
 
     def _parse_response(self, data: Dict[str, Any]) -> Optional[str]:
@@ -127,30 +136,30 @@ class MiniMaxClient(LLMClient):
         修正响应解析逻辑
         """
         try:
-            print(f"[MiniMax] 解析响应: {data}")
-            
             # 检查基础响应状态
             base_resp = data.get("base_resp", {})
             status_code = base_resp.get("status_code")
             
             if status_code != 0:
-                print(f"[MiniMax] API 错误: {base_resp.get('status_msg', 'Unknown error')}")
+                error_msg = base_resp.get('status_msg', 'Unknown error')
+                print(f"[MiniMax] API 错误 {status_code}: {error_msg}")
                 return None
             
-            # 解析回复内容
+            # 解析回复内容 - 根据 MiniMax 官方文档格式
             choices = data.get("choices", [])
-            if choices:
+            if choices and len(choices) > 0:
                 # MiniMax 的回复在 choices[0].text
                 reply = choices[0].get("text", "").strip()
                 if reply:
-                    print(f"[MiniMax] 解析到回复: {reply}")
+                    print(f"[MiniMax] 从 choices 解析到回复: {reply[:100]}...")
                     return reply
             
             # 备用解析方式
-            reply = data.get("reply", "").strip()
-            if reply:
-                print(f"[MiniMax] 从 reply 字段解析到: {reply}")
-                return reply
+            if "reply" in data:
+                reply = data.get("reply", "").strip()
+                if reply:
+                    print(f"[MiniMax] 从 reply 字段解析到: {reply[:100]}...")
+                    return reply
                 
             print("[MiniMax] 未找到有效回复内容")
             return None
