@@ -41,16 +41,23 @@ class MiniMaxClient(LLMClient):
         # 转换为 MiniMax 格式
         minimax_messages = self._convert_messages(messages)
         
-        # 构建请求数据 - 使用最小配置（测试成功的配置）
+        # 构建请求数据
         payload = {
             "model": model or self.default_model,
             "messages": minimax_messages,
+            "bot_setting": [
+                {
+                    "bot_name": "Trading Assistant",
+                    "content": "你是一个专业的加密货币交易助手，必须用JSON格式输出交易决策。"
+                }
+            ],
+            "reply_constraints": {"sender_type": "BOT", "sender_name": "Trading Assistant"},
             "group_id": self.group_id
         }
 
         # 可选参数
         if temperature is not None:
-            payload["temperature"] = temperature
+            payload["temperature"] = max(0.01, min(1.0, temperature))
         if max_tokens is not None:
             payload["tokens_to_generate"] = max_tokens
         if extra_params:
@@ -59,15 +66,23 @@ class MiniMaxClient(LLMClient):
         url = f"{self.base_url.rstrip('/')}/text/chatcompletion_v2"
 
         try:
+            print(f"[MiniMax] 发送请求到: {url}")
+            print(f"[MiniMax] 请求载荷: {payload}")
+            
             resp = self.session.post(url, json=payload, timeout=self.timeout_seconds)
             resp.raise_for_status()
             data = resp.json()
+            
+            print(f"[MiniMax] 原始响应: {data}")
             
             content = self._parse_response(data)
             return {"content": content, "raw": data}
             
         except Exception as e:
             print(f"MiniMax API Error: {e}")
+            if 'resp' in locals():
+                print(f"响应状态码: {resp.status_code}")
+                print(f"响应内容: {resp.text}")
             return {"content": None, "raw": None, "error": str(e)}
 
     def _convert_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
@@ -83,7 +98,7 @@ class MiniMaxClient(LLMClient):
             if not content:
                 continue
                 
-            # MiniMax 只接受 USER 和 BOT
+            # MiniMax 的消息格式
             if role in ["user", "system"]:
                 sender_type = "USER"
             elif role == "assistant":
@@ -93,6 +108,7 @@ class MiniMaxClient(LLMClient):
                 
             minimax_messages.append({
                 "sender_type": sender_type,
+                "sender_name": "User" if sender_type == "USER" else "Assistant",
                 "text": content
             })
         
@@ -100,6 +116,7 @@ class MiniMaxClient(LLMClient):
         if not minimax_messages:
             minimax_messages.append({
                 "sender_type": "USER",
+                "sender_name": "User", 
                 "text": "Hello"
             })
             
@@ -107,13 +124,37 @@ class MiniMaxClient(LLMClient):
 
     def _parse_response(self, data: Dict[str, Any]) -> Optional[str]:
         """
-        解析响应
+        修正响应解析逻辑
         """
         try:
-            if data.get("base_resp", {}).get("status_code") == 0:
-                choices = data.get("choices", [])
-                if choices:
-                    return choices[0].get("text", "").strip()
+            print(f"[MiniMax] 解析响应: {data}")
+            
+            # 检查基础响应状态
+            base_resp = data.get("base_resp", {})
+            status_code = base_resp.get("status_code")
+            
+            if status_code != 0:
+                print(f"[MiniMax] API 错误: {base_resp.get('status_msg', 'Unknown error')}")
+                return None
+            
+            # 解析回复内容
+            choices = data.get("choices", [])
+            if choices:
+                # MiniMax 的回复在 choices[0].text
+                reply = choices[0].get("text", "").strip()
+                if reply:
+                    print(f"[MiniMax] 解析到回复: {reply}")
+                    return reply
+            
+            # 备用解析方式
+            reply = data.get("reply", "").strip()
+            if reply:
+                print(f"[MiniMax] 从 reply 字段解析到: {reply}")
+                return reply
+                
+            print("[MiniMax] 未找到有效回复内容")
             return None
-        except Exception:
+            
+        except Exception as e:
+            print(f"[MiniMax] 解析响应时出错: {e}")
             return None
