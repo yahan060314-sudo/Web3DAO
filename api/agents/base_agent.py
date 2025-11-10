@@ -6,6 +6,10 @@ from api.llm_clients.factory import get_llm_client
 from .bus import MessageBus, Subscription
 from .data_formatter import DataFormatter
 
+#minimax用的
+import json
+import re
+
 
 class BaseAgent(threading.Thread):
     """
@@ -20,6 +24,79 @@ class BaseAgent(threading.Thread):
     - 支持结构化的市场数据（ticker、balance等）
     - 更好的数据聚合和上下文管理
     """
+
+    #以下是minimax用的
+    def _parse_and_fix_decision(self, raw_text: str) -> Optional[Dict]:
+        """解析和修复 MiniMax 的 JSON 决策输出"""
+        if not raw_text:
+            return None
+   
+        # 方法1: 直接解析 JSON
+        try:
+            return json.loads(raw_text.strip())
+        except:
+            pass
+        
+        # 方法2: 提取 JSON 部分
+        json_match = re.search(r'\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}', raw_text, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(0))
+            except:
+                pass
+        
+        # 方法3: 为 MiniMax 专门修复 - 处理自然语言输出
+        return self._fix_minimax_natural_language(raw_text)
+    
+    def _fix_minimax_natural_language(self, text: str) -> Optional[Dict]:
+        """修复 MiniMax 的自然语言输出，转换为 JSON 格式"""
+        text_lower = text.lower()
+        
+        # 检测动作关键词
+        action = "wait"
+        if any(word in text_lower for word in ["buy", "开多", "open_long", "买入", "做多"]):
+            action = "open_long"
+        elif any(word in text_lower for word in ["sell", "平多", "close_long", "卖出", "平仓"]):
+            action = "close_long"
+        elif any(word in text_lower for word in ["hold", "持有", "保持"]):
+            action = "hold"
+        
+        # 检测交易对符号
+        symbol = "BTCUSDT"  # 默认
+        symbol_match = re.search(r'(BTC|ETH|BNB|ADA|DOT|LINK|LTC|BCH|XRP|EOS)[A-Z]*', text.upper())
+        if symbol_match:
+            symbol = symbol_match.group(0) + "USDT"
+        
+        # 检测信心值
+        confidence = 50  # 默认
+        confidence_match = re.search(r'(\d+)%', text)
+        if confidence_match:
+            confidence = min(100, max(0, int(confidence_match.group(1))))
+        else:
+            # 根据关键词估算信心值
+            if any(word in text_lower for word in ["高信心", "强烈", "definitely", "sure"]):
+                confidence = 80
+            elif any(word in text_lower for word in ["中等", "可能", "probably", "likely"]):
+                confidence = 60
+            elif any(word in text_lower for word in ["低信心", "不确定", "unsure", "maybe"]):
+                confidence = 40
+        
+        # 构建修复后的 JSON 决策
+        return {
+            "action": action,
+            "symbol": symbol,
+            "reasoning": text[:300],  # 截取前300字符作为理由
+            "confidence": confidence,
+            "price_ref": 0,
+            "position_size_usd": 0,
+            "stop_loss": 0,
+            "take_profit": 0,
+            "partial_close_pct": 0,
+            "invalidation_condition": "自动修复的决策",
+            "slippage_buffer": 0.0005,
+            "_repaired": True  # 标记这是修复后的决策
+        }
+        #以上是minimax用的
 
     def __init__(self,
                  name: str,
@@ -147,15 +224,14 @@ Based on this information, what trading action do you recommend? Provide your de
         """
         content = dialog_msg.get("content", "")
         self._generate_decision(content)
-    
+
+
+    #以下是改动
     def _generate_decision(self, user_prompt: str) -> None:
         """
-        生成交易决策的核心方法
-        
-        Args:
-            user_prompt: 用户提示词
+        生成交易决策的核心方法 - 增强版（添加文件保存和 MiniMax JSON 修复）
         """
-        # 构建 LLM 输入：系统提示 + 对话历史 + 市场数据
+        # === 构建 LLM 输入：系统提示 + 对话历史 + 市场数据 ===
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": self.system_prompt}
         ]
@@ -173,28 +249,69 @@ Based on this information, what trading action do you recommend? Provide your de
         
         # 添加当前用户提示
         messages.append({"role": "user", "content": user_prompt})
-
+        
         # 请求 LLM 得到决策
         try:
-            llm_out = self.llm.chat(messages, temperature=0.3, max_tokens=512)
-            decision_text = llm_out.get("content") or ""
+            # 调试：打印发送给 LLM 的消息
+            print(f"[{self.name}] 📨 发送给 LLM 的消息数量: {len(messages)}")
+            for i, msg in enumerate(messages):
+                print(f"  {i}. {msg['role']}: {msg['content'][:100]}...")
             
-            # 验证JSON格式（如果可能）
-            json_valid = self._validate_json_decision(decision_text)
-            if not json_valid:
-                print(f"[{self.name}] ⚠ WARNING: Decision may not be in JSON format:")
-                print(f"    {decision_text[:200]}...")
-                print(f"    System will attempt to parse, but JSON format is required.")
-
-            decision = {
-                "agent": self.name,
-                "decision": decision_text,
-                "market_snapshot": self.last_market_snapshot,
-                "timestamp": time.time(),
-                "json_valid": json_valid  # 标记JSON格式是否有效
-            }
-            self.bus.publish(self.decision_topic, decision)
-            print(f"[{self.name}] Published decision: {decision_text[:100]}")
+            llm_out = self.llm.chat(messages, temperature=0.3, max_tokens=512)
+    
+            # 检查 llm_out 是否为 None
+            if llm_out is None:
+                print(f"[{self.name}] ❌ LLM 返回 None")
+                decision_text = ""
+            else:
+                decision_text = llm_out.get("content") or ""
+                print(f"[{self.name}] 🤖 LLM 响应类型: {type(llm_out)}, 内容类型: {type(decision_text)}")
+    
+            # === 新增：处理并保存决策到文件 ===
+            file_path = None
+            try:
+                from utils.trading_file_manager import TradingDecisionFileManager
+                file_manager = TradingDecisionFileManager()
+                file_path = file_manager.process_agent_decision(llm_out, self.name)
+                if file_path:
+                    print(f"[{self.name}] 💾 决策已保存到文件: {file_path}")
+            except ImportError as e:
+                print(f"[{self.name}] ⚠ 文件管理器导入失败: {e}，跳过文件保存")
+            except Exception as file_error:
+                print(f"[{self.name}] ⚠ 文件保存失败: {file_error}")
+                # 即使文件保存失败，也继续执行原有逻辑
+            
+            # === 新增：MiniMax JSON 修复逻辑 ===
+            decision_data = None
+            if decision_text:
+                # 尝试解析 JSON（添加修复逻辑）
+                decision_data = self._parse_and_fix_decision(decision_text)
+            
+            if decision_data:
+                # 发布修复后的决策
+                decision_msg = {
+                    "agent": self.name,
+                    "decision": decision_data,
+                    "market_snapshot": self.last_market_snapshot,
+                    "timestamp": time.time(),
+                    "json_valid": True,
+                    "file_path": file_path
+                }
+                self.bus.publish(topic=self.decision_topic, message=decision_msg)
+                print(f"[{self.name}] Published decision: {decision_data}")
+            else:
+                # 如果无法解析，发布警告
+                warning_msg = {
+                    "agent": self.name,
+                    "decision": decision_text,
+                    "market_snapshot": self.last_market_snapshot,
+                    "timestamp": time.time(),
+                    "json_valid": False,
+                    "file_path": file_path
+                }
+                self.bus.publish(topic=self.decision_topic, message=warning_msg)
+                print(f"[{self.name}] ⚠ WARNING: Decision may not be in JSON format: {decision_text[:100]}...")
+            
         except Exception as e:
             print(f"[{self.name}] Error generating decision: {e}")
     
