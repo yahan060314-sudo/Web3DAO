@@ -1,6 +1,6 @@
 import json
 import os
-import time
+import re
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -19,8 +19,9 @@ class TradingDecisionFileManager:
         dirs = [
             self.base_dir,
             os.path.join(self.base_dir, "pending"),
-            os.path.join(self.base_dir, "executed"),
-            os.path.join(self.base_dir, "rejected")
+            os.path.join(self.base_dir, "executed"), 
+            os.path.join(self.base_dir, "rejected"),
+            os.path.join(self.base_dir, "minimax_raw")  # 专门保存 MiniMax 原始响应
         ]
         
         for directory in dirs:
@@ -32,10 +33,16 @@ class TradingDecisionFileManager:
         """
         从 LLM 客户端响应中提取和验证 JSON 决策
         """
-        raw_content = llm_response.get("content", "").strip()
+        # 安全地获取内容，处理 None 值
+        raw_content = llm_response.get("content")
+        if raw_content is None:
+            print("❌ LLM 响应内容为 None")
+            return None
+        
+        raw_content = str(raw_content).strip()  # 确保是字符串
         
         if not raw_content:
-            print("❌ LLM 响应内容为空")
+            print("❌ LLM 响应内容为空字符串")
             return None
         
         print(f"🤖 LLM 原始响应: {raw_content[:200]}...")
@@ -43,11 +50,18 @@ class TradingDecisionFileManager:
         # 清理响应文本
         cleaned_text = self._clean_trading_decision_text(raw_content)
         
+        if not cleaned_text:
+            print("❌ 清理后文本为空")
+            return None
+        
         # 验证和解析 JSON
         return self._validate_trading_decision(cleaned_text)
     
     def _clean_trading_decision_text(self, text: str) -> str:
         """清理交易决策文本"""
+        if not text:
+            return ""
+            
         text = text.strip()
         
         # 移除代码块标记
@@ -67,6 +81,9 @@ class TradingDecisionFileManager:
     
     def _validate_trading_decision(self, json_text: str) -> Optional[Dict[str, Any]]:
         """验证交易决策 JSON"""
+        if not json_text:
+            return None
+            
         try:
             decision = json.loads(json_text)
             
@@ -89,6 +106,29 @@ class TradingDecisionFileManager:
         except json.JSONDecodeError as e:
             print(f"❌ JSON 解析失败: {e}")
             return None
+    
+    def save_minimax_raw_response(self, llm_response: Dict[str, Any], agent_name: str) -> str:
+        """
+        专门保存 MiniMax 的原始响应，用于调试和分析
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{agent_name}_minimax_raw.json"
+        file_path = os.path.join(self.base_dir, "minimax_raw", filename)
+        
+        save_data = {
+            "agent": agent_name,
+            "timestamp": datetime.now().isoformat(),
+            "llm_response": llm_response,
+            "raw_content": llm_response.get("content", "") if llm_response else "No response"
+        }
+        
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+            return file_path
+        except Exception as e:
+            print(f"❌ 原始响应保存失败: {e}")
+            return ""
     
     def save_decision_to_file(self, 
                             decision: Dict[str, Any], 
@@ -142,64 +182,37 @@ class TradingDecisionFileManager:
         """
         print(f"\n=== 处理 {agent_name} 的决策 ===")
         
-        # 1. 提取和验证 JSON
-        decision = self.extract_json_from_llm_response(llm_response)
-        if not decision:
-            print(f"❌ {agent_name} 的决策无效")
-            # 保存无效决策用于分析
+        # 检查 llm_response 是否为 None
+        if llm_response is None:
+            print(f"❌ {agent_name} 的 LLM 响应为 None")
             invalid_decision = {
                 "action": "invalid",
-                "symbol": "N/A",
-                "reason": "Failed to parse decision",
-                "raw_response": llm_response.get("content", "")[:500]
+                "symbol": "N/A", 
+                "reason": "LLM response is None",
+                "llm_provider": os.getenv("LLM_PROVIDER", "unknown")
             }
             return self.save_decision_to_file(invalid_decision, agent_name, "rejected")
         
-        # 2. 保存有效决策
-        return self.save_decision_to_file(decision, agent_name, "pending")
-
-# 集成到您的 Agent 系统中的示例
-def integrate_with_agents():
-    """
-    展示如何将文件管理器集成到您的 Agent 系统中
-    """
-    file_manager = TradingDecisionFileManager()
-    
-    # 模拟从您的 Agent 系统获取 LLM 响应
-    mock_llm_responses = [
-        {
-            "agent": "alpha_agent",
-            "response": {
-                "content": '{"action": "buy", "symbol": "BTC/USDT", "quantity": 0.5, "price": 50000, "reason": "突破阻力位"}',
-                "raw": {"some": "raw_data"}
-            }
-        },
-        {
-            "agent": "beta_agent", 
-            "response": {
-                "content": '```json\n{"action": "sell", "symbol": "ETH/USDT", "quantity": 10, "reason": "到达目标价"}\n```',
-                "raw": {"some": "raw_data"}
-            }
-        }
-    ]
-    
-    # 处理每个 Agent 的决策
-    for agent_data in mock_llm_responses:
-        file_path = file_manager.process_agent_decision(
-            agent_data["response"], 
-            agent_data["agent"]
-        )
+        # 1. 提取和验证 JSON
+        decision = self.extract_json_from_llm_response(llm_response)
         
-        if file_path:
-            print(f"✅ {agent_data['agent']} 决策已保存: {file_path}")
-        else:
-            print(f"❌ {agent_data['agent']} 决策处理失败")
-
-if __name__ == "__main__":
-    print("🧪 测试基础文件生成器:")
-    example_usage()
-    
-    print("\n" + "="*50 + "\n")
-    
-    print("🧪 测试交易决策文件管理器:")
-    integrate_with_agents()
+        # 2. 如果是 MiniMax 且决策无效，保存原始响应用于分析
+        if os.getenv("LLM_PROVIDER") == "minimax" and not decision:
+            raw_file_path = self.save_minimax_raw_response(llm_response, agent_name)
+            print(f"📄 MiniMax 原始响应已保存: {raw_file_path}")
+        
+        if not decision:
+            print(f"❌ {agent_name} 的决策无效")
+            # 保存无效决策用于分析
+            raw_content = llm_response.get("content", "") if llm_response else "No response"
+            invalid_decision = {
+                "action": "invalid",
+                "symbol": "N/A", 
+                "reason": "Failed to parse decision",
+                "raw_response": str(raw_content)[:500],  # 确保是字符串
+                "llm_provider": os.getenv("LLM_PROVIDER", "unknown")
+            }
+            return self.save_decision_to_file(invalid_decision, agent_name, "rejected")
+        
+        # 3. 保存有效决策
+        return self.save_decision_to_file(decision, agent_name, "pending")
