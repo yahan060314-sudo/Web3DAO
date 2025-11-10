@@ -6,9 +6,9 @@ from .base import LLMClient
 
 load_dotenv()
 
-class MiniMaxClient(LLMClient):  # 关键：类名必须是 MiniMaxClient
+class MiniMaxOptimized(LLMClient):
     """
-    修正版的 MiniMax 客户端 - 使用已验证的正确格式
+    MiniMax 优化版客户端 - 处理消息限制
     """
 
     def __init__(self,
@@ -33,7 +33,7 @@ class MiniMaxClient(LLMClient):  # 关键：类名必须是 MiniMaxClient
 
         self.session = requests.Session()
         self.session.headers.update({
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         })
 
@@ -43,14 +43,15 @@ class MiniMaxClient(LLMClient):  # 关键：类名必须是 MiniMaxClient
              max_tokens: Optional[int] = None,
              extra_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         
-        # 使用已验证的正确格式
+        # 优化消息格式 - 合并多个system消息
+        optimized_messages = self._optimize_messages(messages)
+        
         payload = {
             "model": model or self.default_model,
-            "messages": self._format_messages(messages),
+            "messages": optimized_messages,
             "group_id": self.group_id
         }
 
-        # 可选参数
         if temperature is not None:
             payload["temperature"] = max(0.01, min(1.0, temperature))
         if max_tokens is not None:
@@ -59,7 +60,11 @@ class MiniMaxClient(LLMClient):  # 关键：类名必须是 MiniMaxClient
         url = f"{self.base_url.rstrip('/')}/text/chatcompletion_v2"
 
         try:
+            print(f"[MiniMax] 发送 {len(optimized_messages)} 条优化后的消息")
+            
             resp = self.session.post(url, json=payload, timeout=self.timeout_seconds)
+            print(f"[MiniMax] 响应状态码: {resp.status_code}")
+            
             resp.raise_for_status()
             data = resp.json()
             
@@ -68,28 +73,50 @@ class MiniMaxClient(LLMClient):  # 关键：类名必须是 MiniMaxClient
             
         except Exception as e:
             print(f"MiniMax API Error: {e}")
+            if 'resp' in locals():
+                try:
+                    print(f"错误详情: {resp.json()}")
+                except:
+                    print(f"响应文本: {resp.text}")
             return {"content": None, "raw": None, "error": str(e)}
 
-    def _format_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def _optimize_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """
-        使用正确的消息格式：role 和 content
+        优化消息格式 - 合并多个system消息，限制消息数量
         """
-        formatted_messages = []
+        if len(messages) <= 2:
+            return messages  # 如果消息很少，直接返回
+            
+        # 合并所有system消息
+        system_messages = []
+        user_messages = []
         
         for msg in messages:
-            role = msg.get("role", "user").lower()
+            role = msg.get("role", "user")
             content = msg.get("content", "").strip()
             
             if not content:
                 continue
                 
-            formatted_msg = {
-                "role": role,
-                "content": content
-            }
-            formatted_messages.append(formatted_msg)
+            if role == "system":
+                system_messages.append(content)
+            else:
+                user_messages.append({"role": role, "content": content})
         
-        return formatted_messages
+        # 构建优化后的消息列表
+        optimized = []
+        
+        # 合并所有system消息为一个
+        if system_messages:
+            combined_system = "\\n\\n".join(system_messages)
+            optimized.append({"role": "system", "content": combined_system})
+        
+        # 只保留最后一个user消息（避免重复）
+        if user_messages:
+            optimized.append(user_messages[-1])
+        
+        print(f"[MiniMax] 消息优化: {len(messages)} -> {len(optimized)} 条")
+        return optimized
 
     def _parse_response(self, data: Dict[str, Any]) -> Optional[str]:
         """
@@ -112,4 +139,3 @@ class MiniMaxClient(LLMClient):  # 关键：类名必须是 MiniMaxClient
             
         except Exception:
             return None
-            
