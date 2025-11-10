@@ -227,12 +227,11 @@ Based on this information, what trading action do you recommend? Provide your de
 
 
     #以下是改动
-   def _generate_decision(self, user_prompt: str) -> None:
+    def _generate_decision(self, user_prompt: str) -> None:
         """
         生成交易决策的核心方法 - 增强版（添加文件保存和 MiniMax JSON 修复）
         """
-        # === 添加缺失的 messages 构建代码 ===
-        # 构建 LLM 输入：系统提示 + 对话历史 + 市场数据
+        # === 构建 LLM 输入：系统提示 + 对话历史 + 市场数据 ===
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": self.system_prompt}
         ]
@@ -250,8 +249,7 @@ Based on this information, what trading action do you recommend? Provide your de
         
         # 添加当前用户提示
         messages.append({"role": "user", "content": user_prompt})
-        # === messages 构建代码结束 ===
-    
+        
         # 请求 LLM 得到决策
         try:
             # 调试：打印发送给 LLM 的消息
@@ -282,8 +280,7 @@ Based on this information, what trading action do you recommend? Provide your de
             except Exception as file_error:
                 print(f"[{self.name}] ⚠ 文件保存失败: {file_error}")
                 # 即使文件保存失败，也继续执行原有逻辑
-            # === 新增结束 ===
-    
+            
             # === 新增：MiniMax JSON 修复逻辑 ===
             decision_data = None
             if decision_text:
@@ -314,8 +311,7 @@ Based on this information, what trading action do you recommend? Provide your de
                 }
                 self.bus.publish(topic=self.decision_topic, message=warning_msg)
                 print(f"[{self.name}] ⚠ WARNING: Decision may not be in JSON format: {decision_text[:100]}...")
-            # === MiniMax JSON 修复逻辑结束 ===
-                
+            
         except Exception as e:
             print(f"[{self.name}] Error generating decision: {e}")
     
