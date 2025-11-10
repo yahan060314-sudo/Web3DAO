@@ -302,7 +302,7 @@ Based on this information, what trading action do you recommend? Provide your de
         # === 新增：处理并保存决策到文件 ===
         file_path = None
         try:
-            from api.utils.trading_file_manager import TradingDecisionFileManager
+            from utils.trading_file_manager import TradingDecisionFileManager
             file_manager = TradingDecisionFileManager()
             file_path = file_manager.process_agent_decision(llm_out, self.name)
             if file_path:
