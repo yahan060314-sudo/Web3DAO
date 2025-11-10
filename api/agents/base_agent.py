@@ -272,19 +272,44 @@ Based on this information, what trading action do you recommend? Provide your de
         """
         生成交易决策的核心方法 - 增强版（添加文件保存）
         """
-        # ... 前面代码保持不变 ...
+        # === 添加缺失的 messages 构建代码 ===
+        # 构建 LLM 输入：系统提示 + 对话历史 + 市场数据
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": self.system_prompt}
+        ]
         
+        # 添加市场数据上下文
+        if self.last_market_snapshot is not None:
+            market_text = self.formatter.format_for_llm(self.last_market_snapshot)
+            messages.append({
+                "role": "system",
+                "content": f"Current Market Data:\n{market_text}"
+            })
+        
+        # 添加最近的对话历史（控制上下文长度）
+        messages.extend(self.dialog_history[-5:])
+        
+        # 添加当前用户提示
+        messages.append({"role": "user", "content": user_prompt})
+        # === messages 构建代码结束 ===
+    
         # 请求 LLM 得到决策
         try:
-            llm_out = self.llm.chat(messages, temperature=0.3, max_tokens=512)
+            # 调试：打印发送给 LLM 的消息
+            print(f"[{self.name}] 📨 发送给 LLM 的消息数量: {len(messages)}")
+            for i, msg in enumerate(messages):
+                print(f"  {i}. {msg['role']}: {msg['content'][:100]}...")
             
+            llm_out = self.llm.chat(messages, temperature=0.3, max_tokens=512)
+    
             # 检查 llm_out 是否为 None
             if llm_out is None:
                 print(f"[{self.name}] ❌ LLM 返回 None")
                 decision_text = ""
             else:
                 decision_text = llm_out.get("content") or ""
-            
+                print(f"[{self.name}] 🤖 LLM 响应类型: {type(llm_out)}, 内容类型: {type(decision_text)}")
+    
             # === 新增：处理并保存决策到文件 ===
             file_path = None
             try:
@@ -299,7 +324,7 @@ Based on this information, what trading action do you recommend? Provide your de
                 print(f"[{self.name}] ⚠ 文件保存失败: {file_error}")
                 # 即使文件保存失败，也继续执行原有逻辑
             # === 新增结束 ===
-            
+    
             # 验证JSON格式（如果可能）
             json_valid = self._validate_json_decision(decision_text)
             if not json_valid:
