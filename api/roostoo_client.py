@@ -53,9 +53,34 @@ class RoostooClient:
         param_string = "&".join(f"{k}={v}" for k, v in sorted_params)
         return param_string
 
+    # --- Public API Endpoints ---
+    
+    def check_server_time(self) -> Dict:
+        """[RCL_NoVerification] 检查服务器时间"""
+        url = f"{self.base_url}/v3/serverTime"
+        response = self.session.get(url, timeout=10)
+        return response.json()
+
+    def get_exchange_info(self) -> Dict:
+        """[RCL_NoVerification] 获取交易所信息"""
+        url = f"{self.base_url}/v3/exchangeInfo"
+        response = self.session.get(url, timeout=10)
+        return response.json()
+
+    def get_ticker(self, pair: str = None) -> Dict:
+        """[RCL_TSCheck] 获取市场行情"""
+        timestamp = self._get_synchronized_timestamp()
+        params = {'timestamp': timestamp}
+        if pair:
+            params['pair'] = pair
+            
+        url = f"{self.base_url}/v3/ticker"
+        response = self.session.get(url, params=params, timeout=10)
+        return response.json()
+
     def get_balance(self) -> Dict:
-        """获取账户余额"""
-        # 每次请求前重新同步时间（可选，为了更精确）
+        """[RCL_TopLevelCheck] 获取账户余额"""
+        # 每次请求前重新同步时间
         self._sync_time()
         
         timestamp = self._get_synchronized_timestamp()
@@ -70,6 +95,7 @@ class RoostooClient:
         }
         
         print(f"[RoostooClient] 余额请求:")
+        print(f"  API Key: {self.api_key[:20]}...")
         print(f"  时间戳: {timestamp}")
         print(f"  参数字符串: {param_string}")
         print(f"  签名: {signature}")
@@ -79,52 +105,63 @@ class RoostooClient:
         
         if response.status_code == 200:
             print("[RoostooClient] ✓ 余额请求成功")
+            return response.json()
         else:
             print(f"[RoostooClient] ✗ 余额请求失败: {response.status_code} - {response.text}")
-            
-        return response.json()
+            # 返回错误信息而不是抛出异常
+            return {
+                "Success": False,
+                "ErrMsg": f"HTTP {response.status_code}: {response.text}",
+                "status_code": response.status_code
+            }
 
-    def get_ticker(self, pair: str = None) -> Dict:
-        """获取市场行情"""
+    def get_pending_count(self) -> Dict:
+        """[RCL_TopLevelCheck] 获取挂单数量"""
+        self._sync_time()
         timestamp = self._get_synchronized_timestamp()
         params = {'timestamp': timestamp}
-        if pair:
-            params['pair'] = pair
-            
-        url = f"{self.base_url}/v3/ticker"
-        response = self.session.get(url, params=params, timeout=10)
-        return response.json()
-
-    def get_exchange_info(self) -> Dict:
-        """获取交易所信息"""
-        url = f"{self.base_url}/v3/exchangeInfo"
-        response = self.session.get(url, timeout=10)
+        
+        param_string = self._build_param_string(params)
+        signature = self._generate_signature(param_string)
+        
+        headers = {
+            'RST-API-KEY': self.api_key,
+            'MSG-SIGNATURE': signature
+        }
+        
+        url = f"{self.base_url}/v3/pending_count"
+        response = self.session.get(url, headers=headers, params=params, timeout=10)
         return response.json()
 
 # 测试修复的客户端
-def test_fixed_client():
+def test_complete_client():
     client = RoostooClient()
     
-    print("=== 测试修复的Roostoo客户端 ===")
+    print("=== 测试完整的Roostoo客户端 ===")
     
     try:
-        # 测试余额
-        print("\n1. 测试余额查询...")
-        balance = client.get_balance()
-        print(f"余额响应: {balance}")
-        
-        # 测试市场数据
-        print("\n2. 测试市场行情...")
-        ticker = client.get_ticker("BTC/USD")
-        print(f"BTC/USD行情: {ticker}")
+        # 测试服务器时间
+        print("\n1. 测试服务器时间...")
+        server_time = client.check_server_time()
+        print(f"   服务器时间: {server_time}")
         
         # 测试交易所信息
-        print("\n3. 测试交易所信息...")
+        print("\n2. 测试交易所信息...")
         exchange_info = client.get_exchange_info()
-        print(f"交易所状态: {exchange_info.get('IsRunning', 'Unknown')}")
+        print(f"   交易所状态: {exchange_info.get('IsRunning', 'Unknown')}")
+        
+        # 测试市场数据
+        print("\n3. 测试市场行情...")
+        ticker = client.get_ticker("BTC/USD")
+        print(f"   BTC/USD价格: {ticker.get('Data', {}).get('BTC/USD', {}).get('LastPrice', 'Unknown')}")
+        
+        # 测试余额
+        print("\n4. 测试余额查询...")
+        balance = client.get_balance()
+        print(f"   余额响应: {balance}")
         
     except Exception as e:
         print(f"测试失败: {e}")
 
 if __name__ == "__main__":
-    test_fixed_client()
+    test_complete_client()
