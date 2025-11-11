@@ -42,7 +42,6 @@ class TradeExecutor(threading.Thread):
         self.default_pair = default_pair
         self._stopped = False
         self._last_order_ts: Optional[float] = None
-        self._first_decision_processed = False  # 标记是否已处理第一个决策
 
     def stop(self):
         self._stopped = True
@@ -115,91 +114,7 @@ class TradeExecutor(threading.Thread):
                 elif has_trade_action:
                     print(f"[Executor] Debug: 检测到交易动作，不是wait/hold")
         
-        # 如果是第一个决策且是wait/hold，强制转换为一个合理的交易决策
-        if is_wait_hold and not self._first_decision_processed:
-            agent = decision_msg.get("agent", "unknown")
-            print(f"[Executor] ⚠️ 第一个决策是 wait/hold，强制转换为初始交易决策 (Agent: {agent})")
-            # 获取当前价格（尝试多种路径）
-            market_snapshot = decision_msg.get("market_snapshot")
-            current_price = None
-            
-            # 调试：打印market_snapshot结构
-            if market_snapshot:
-                print(f"[Executor] Debug: market_snapshot keys: {list(market_snapshot.keys()) if isinstance(market_snapshot, dict) else 'not a dict'}")
-            
-            # 尝试从不同路径获取价格
-            if market_snapshot:
-                # 路径1: market_snapshot["ticker"]["price"]
-                if isinstance(market_snapshot, dict):
-                    ticker = market_snapshot.get("ticker")
-                    if ticker and isinstance(ticker, dict):
-                        current_price = ticker.get("price")
-                    
-                    # 路径2: market_snapshot["price"] (直接)
-                    if not current_price:
-                        current_price = market_snapshot.get("price")
-                    
-                    # 路径3: 从决策JSON中获取price_ref
-                    if not current_price and decision_text:
-                        try:
-                            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
-                            if json_match:
-                                json_str = json_match.group(0)
-                                data = json.loads(json_str)
-                                price_ref = data.get("price_ref")
-                                if price_ref:
-                                    current_price = float(price_ref)
-                        except (json.JSONDecodeError, ValueError, TypeError):
-                            pass
-            
-            if current_price:
-                # 强制创建一个买入决策（小额，保守）
-                print(f"[Executor] 强制创建初始买入决策: 价格={current_price}, 数量=0.01 BTC")
-                parsed = {
-                    "side": "BUY",
-                    "quantity": 0.01,
-                    "price": None,  # 市价单
-                    "pair": self.default_pair
-                }
-                self._first_decision_processed = True
-                # 跳过后续解析，直接使用强制创建的决策
-            else:
-                print(f"[Executor] ⚠️ 无法获取价格，尝试从API获取...")
-                # 如果无法从market_snapshot获取，尝试从API获取
-                try:
-                    if not self.dry_run and self.client:
-                        ticker = self.client.get_ticker(pair=self.default_pair)
-                        # 尝试从ticker响应中提取价格
-                        if isinstance(ticker, dict):
-                            data = ticker.get("Data", ticker.get("data", ticker))
-                            if isinstance(data, dict):
-                                pair_data = data.get(self.default_pair, data)
-                                if isinstance(pair_data, dict):
-                                    current_price = pair_data.get("LastPrice") or pair_data.get("price")
-                        
-                        if current_price:
-                            current_price = float(current_price)
-                            print(f"[Executor] 从API获取价格成功: {current_price}")
-                            parsed = {
-                                "side": "BUY",
-                                "quantity": 0.01,
-                                "price": None,  # 市价单
-                                "pair": self.default_pair
-                            }
-                            self._first_decision_processed = True
-                        else:
-                            print(f"[Executor] ⚠️ 从API也无法获取价格，跳过强制交易")
-                            self._first_decision_processed = True
-                            return
-                    else:
-                        print(f"[Executor] ⚠️ 无法获取价格（dry_run模式或无客户端），跳过强制交易")
-                        self._first_decision_processed = True
-                        return
-                except Exception as e:
-                    print(f"[Executor] ⚠️ 从API获取价格失败: {e}，跳过强制交易")
-                    self._first_decision_processed = True
-                    return
-        elif is_wait_hold:
+        if is_wait_hold:
             # 非第一个决策的wait/hold，正常处理
             agent = decision_msg.get("agent", "unknown")
             print(f"[Executor] ✓ 决策为 wait/hold，无需执行交易 (Agent: {agent})")
@@ -207,10 +122,6 @@ class TradeExecutor(threading.Thread):
         else:
             # 不是wait/hold，正常解析
             parsed = self._parse_decision(decision_msg)
-        
-        # 标记第一个决策已处理（无论是否成功解析）
-        if not self._first_decision_processed:
-            self._first_decision_processed = True
         
         if parsed is None:
             decision_text = str(decision_msg.get("decision", ""))[:100]
@@ -501,7 +412,7 @@ class TradeExecutor(threading.Thread):
         quantity = 0.01  # 默认值
         qty_patterns = [
             r'\b(?:buy|sell|purchase)\s+(\d+\.?\d*)',  # "buy 0.01"
-            r'\b(\d+\.?\d*)\s+(?:btc|eth|sol|bnb|doge)',  # "0.01 BTC"
+            r'\b(\d+\.?\d*)\s+([a-z]{2,10})\b',  # "0.01 BTC" 或 "0.01 ETH" 等（支持所有币种）
             r'quantity[:\s]+(\d+\.?\d*)',  # "quantity: 0.01"
             r'amount[:\s]+(\d+\.?\d*)',  # "amount: 0.01"
         ]
@@ -533,22 +444,73 @@ class TradeExecutor(threading.Thread):
                     continue
         
         # 交易对识别
+        # 尝试从文本中提取币种，支持所有币种
         pair = self.default_pair
-        for sym in ["btc", "eth", "sol", "bnb", "doge"]:
-            if re.search(rf'\b{sym}\b', text_lower):
-                pair = f"{sym.upper()}/USD"
-                break
+        try:
+            if self.client:
+                exchange_info = self.client.get_exchange_info()
+                trade_pairs = exchange_info.get('data', {}).get('TradePairs', {})
+                if not trade_pairs:
+                    trade_pairs = exchange_info.get('TradePairs', {})
+                
+                # 查找文本中提到的币种
+                for available_pair in trade_pairs.keys():
+                    base_currency = available_pair.split('/')[0] if '/' in available_pair else available_pair.split('-')[0]
+                    if re.search(rf'\b{base_currency.lower()}\b', text_lower):
+                        pair = available_pair
+                        break
+        except Exception as e:
+            print(f"[Executor] ⚠️ 获取交易对列表失败: {e}，使用默认交易对")
+            # 回退到常见币种
+            for sym in ["btc", "eth", "sol", "bnb", "doge"]:
+                if re.search(rf'\b{sym}\b', text_lower):
+                    pair = f"{sym.upper()}/USD"
+                    break
         
         return {"side": side, "quantity": quantity, "price": price, "pair": pair}
     
     def _convert_symbol_to_pair(self, symbol: str) -> str:
         """
-        转换symbol格式：BTCUSDT -> BTC/USD, BTC/USDT -> BTC/USD
+        转换symbol格式：支持所有虚拟货币币种
+        - BTCUSDT -> BTC/USD
+        - ETHUSDT -> ETH/USD
+        - 支持所有Roostoo API中的交易对
         """
-        # 移除USDT/USD后缀
-        symbol = symbol.replace("USDT", "").replace("USD", "").replace("/", "")
+        if not symbol:
+            return self.default_pair
         
-        # 添加/USD后缀
-        if symbol:
-            return f"{symbol}/USD"
-        return self.default_pair
+        # 清理symbol格式
+        symbol_clean = symbol.replace("USDT", "").replace("USD", "").replace("/", "").upper()
+        
+        if not symbol_clean:
+            return self.default_pair
+        
+        # 尝试从Roostoo API获取所有可用交易对
+        try:
+            if self.client:
+                exchange_info = self.client.get_exchange_info()
+                trade_pairs = exchange_info.get('data', {}).get('TradePairs', {})
+                if not trade_pairs:
+                    trade_pairs = exchange_info.get('TradePairs', {})
+                
+                # 查找匹配的交易对
+                # 1. 精确匹配：symbol/USD
+                target_pair = f"{symbol_clean}/USD"
+                if target_pair in trade_pairs:
+                    return target_pair
+                
+                # 2. 查找所有包含该币种的交易对
+                for pair in trade_pairs.keys():
+                    # 提取交易对中的基础币种（如 BTC/USD -> BTC）
+                    base_currency = pair.split('/')[0] if '/' in pair else pair.split('-')[0]
+                    if base_currency.upper() == symbol_clean:
+                        return pair
+                
+                # 3. 如果找不到，尝试构造标准格式
+                print(f"[Executor] ⚠️ 未找到 {symbol_clean} 的交易对，使用构造格式: {target_pair}")
+                return target_pair
+        except Exception as e:
+            print(f"[Executor] ⚠️ 获取交易对列表失败: {e}，使用默认格式")
+        
+        # 回退：使用标准格式
+        return f"{symbol_clean}/USD"

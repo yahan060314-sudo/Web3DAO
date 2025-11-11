@@ -197,16 +197,9 @@ Example valid outputs:
         if additional_context:
             prompt += f"Additional Context: {additional_context}\n\n"
         
-        if require_decision:
-            prompt += """IMPORTANT: You MUST make a trading decision based on the available market data:
-- Confidence threshold is LOWERED: 60%+ confidence is sufficient (not 85%+)
-- If you see a reasonable opportunity (60%+ confidence), choose "open_long" or "close_long"
-- Only choose "wait" or "hold" if market conditions are truly unclear or unfavorable (not just uncertain)
-- Don't be overly cautious - make a decision based on the current market data
-- Remember: Acting with 60% confidence is better than waiting indefinitely
-- Use smaller position size (300-500 USD) if you're less confident, but still make a decision
-
-"""
+        # 移除强制决策要求，让AI完全自主决策
+        # if require_decision:
+        #     prompt += """IMPORTANT: You MUST make a trading decision...
         
         prompt += """Based on the above information:
 1. What is your analysis of the current market?
