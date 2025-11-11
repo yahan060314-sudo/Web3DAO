@@ -47,6 +47,69 @@ start_time = None
 logger = None
 
 
+def _to_pair_with_slash(symbol: str) -> str:
+    """
+    将诸如 BTCUSDT 转换为 BTC/USD；已含斜杠的保持不变。
+    """
+    s = str(symbol).strip().upper()
+    if "/" in s:
+        return s
+    if s.endswith("USDT"):
+        base = s[:-4]
+        return f"{base}/USD"
+    if s.endswith("USD"):
+        base = s[:-3]
+        return f"{base}/USD"
+    if len(s) == 6:
+        return f"{s[:3]}/{s[3:]}"
+    return s
+
+
+def load_all_tradeable_usd_pairs() -> list:
+    """
+    从 exchangeInfo 动态加载可交易的 USD 计价交易对，统一为 'BASE/USD'。
+    解析失败时回退为 ['BTC/USD']。
+    """
+    try:
+        client = RoostooClient()
+        info = client.get_exchange_info()
+        candidates = []
+        if isinstance(info, dict):
+            if "Symbols" in info and isinstance(info["Symbols"], list):
+                for item in info["Symbols"]:
+                    pair_val = None
+                    if isinstance(item, dict):
+                        pair_val = item.get("Pair") or item.get("pair") or item.get("Symbol") or item.get("symbol")
+                    elif isinstance(item, str):
+                        pair_val = item
+                    if pair_val:
+                        candidates.append(_to_pair_with_slash(pair_val))
+            elif "symbols" in info and isinstance(info["symbols"], list):
+                for item in info["symbols"]:
+                    pair_val = None
+                    if isinstance(item, dict):
+                        pair_val = item.get("symbol") or item.get("pair")
+                    elif isinstance(item, str):
+                        pair_val = item
+                    if pair_val:
+                        candidates.append(_to_pair_with_slash(pair_val))
+            elif "Pairs" in info and isinstance(info["Pairs"], list):
+                for s in info["Pairs"]:
+                    candidates.append(_to_pair_with_slash(s))
+        # 仅保留 USD 计价，去重且保持顺序
+        seen = set()
+        usd_pairs = []
+        for p in candidates:
+            if p.endswith("/USD") and p not in seen:
+                seen.add(p)
+                usd_pairs.append(p)
+        if not usd_pairs:
+            usd_pairs = ["BTC/USD"]
+        return usd_pairs
+    except Exception:
+        return ["BTC/USD"]
+
+
 def setup_logging():
     """设置日志记录"""
     global logger
@@ -330,17 +393,17 @@ def main():
     logger.info("\n[7] 启动Agents...")
     mgr.start()
     
-    # 10. 创建市场数据采集器（自动发现所有交易对，自动优化采集间隔）
+    # 10. 创建市场数据采集器
     logger.info("[8] 启动市场数据采集器...")
+    all_usd_pairs = load_all_tradeable_usd_pairs()
+    logger.info(f"[MarketDataCollector] 可交易USD交易对数量: {len(all_usd_pairs)}")
     collector = MarketDataCollector(
         bus=mgr.bus,
         market_topic=mgr.market_topic,
-        pairs=None,  # None表示自动发现所有可用交易对
-        collect_interval=None,  # None表示根据交易对数量自动计算最优间隔
+        pairs=all_usd_pairs,
+        collect_interval=30.0,  # 延长为30秒，进一步降低API调用频率
         collect_balance=True,
-        collect_ticker=True,
-        auto_discover_pairs=True,  # 自动发现所有可用交易对
-        batch_size=3  # 每次循环采集3个交易对（避免单次调用太多API）
+        collect_ticker=True
     )
     collector.start()
     
