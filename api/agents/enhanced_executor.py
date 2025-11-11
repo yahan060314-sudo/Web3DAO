@@ -145,15 +145,50 @@ class EnhancedTradeExecutor(threading.Thread):
                 return
         
         # 3. 单AI决策执行
+        # 首先检查是否是wait/hold决策（这是有效的决策，不需要执行交易）
+        decision_text = str(decision_msg.get("decision", "")).strip()
+        is_wait_hold = False
+        if decision_text:
+            try:
+                # 尝试解析JSON格式
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    data = json.loads(json_str)
+                    action = data.get("action", "").lower()
+                    if action in ["wait", "hold"]:
+                        is_wait_hold = True
+            except (json.JSONDecodeError, ValueError):
+                pass
+            
+            # 检查自然语言格式
+            if not is_wait_hold:
+                text_lower = decision_text.lower()
+                if any(word in text_lower for word in ["hold", "wait", "no action", "no trade", "do nothing"]):
+                    is_wait_hold = True
+        
+        if is_wait_hold:
+            # wait/hold是有效的决策，不需要执行交易
+            print(f"[EnhancedExecutor] ✓ 决策为 wait/hold，无需执行交易")
+            
+            # 记录执行结果（跳过，不是失败）
+            if self.decision_manager and decision_id:
+                self.decision_manager.record_execution_result(
+                    decision_id=decision_id,
+                    status="skipped",
+                    error="Decision is wait/hold, no action needed"
+                )
+            return
+        
         # 解析决策（使用原有的解析逻辑）
         parsed = self._parse_decision(decision_msg)
         
         if parsed is None:
-            # 决策无法解析
+            # 决策无法解析（不是wait/hold，但无法解析）
             if json_valid is False:
                 print(f"[EnhancedExecutor] ✗ 决策格式无效（非JSON）")
             else:
-                print(f"[EnhancedExecutor] ⚠️ 决策无法解析（可能是 wait/hold）")
+                print(f"[EnhancedExecutor] ✗ 决策无法解析（格式错误）")
             
             # 记录执行结果（失败）
             if self.decision_manager and decision_id:
@@ -533,7 +568,7 @@ class EnhancedTradeExecutor(threading.Thread):
         quantity = 0.01
         qty_patterns = [
             r'\b(?:buy|sell|purchase)\s+(\d+\.?\d*)',
-            r'\b(\d+\.?\d*)\s+(?:btc|eth|sol|bnb|doge)',
+            r'\b(\d+\.?\d*)\s+([a-z]{2,10})\b',  # "0.01 BTC" 或 "0.01 ETH" 等（支持所有币种）
             r'quantity[:\s]+(\d+\.?\d*)',
             r'amount[:\s]+(\d+\.?\d*)',
         ]
@@ -563,20 +598,76 @@ class EnhancedTradeExecutor(threading.Thread):
                 except ValueError:
                     continue
         
+        # 尝试从文本中提取币种，支持所有币种
         pair = self.default_pair
-        for sym in ["btc", "eth", "sol", "bnb", "doge"]:
-            if re.search(rf'\b{sym}\b', text_lower):
-                pair = f"{sym.upper()}/USD"
-                break
+        try:
+            if self.client:
+                exchange_info = self.client.get_exchange_info()
+                trade_pairs = exchange_info.get('data', {}).get('TradePairs', {})
+                if not trade_pairs:
+                    trade_pairs = exchange_info.get('TradePairs', {})
+                
+                # 查找文本中提到的币种
+                for available_pair in trade_pairs.keys():
+                    base_currency = available_pair.split('/')[0] if '/' in available_pair else available_pair.split('-')[0]
+                    if re.search(rf'\b{base_currency.lower()}\b', text_lower):
+                        pair = available_pair
+                        break
+        except Exception as e:
+            print(f"[EnhancedExecutor] ⚠️ 获取交易对列表失败: {e}，使用默认交易对")
+            # 回退到常见币种
+            for sym in ["btc", "eth", "sol", "bnb", "doge"]:
+                if re.search(rf'\b{sym}\b', text_lower):
+                    pair = f"{sym.upper()}/USD"
+                    break
         
         return {"side": side, "quantity": quantity, "price": price, "pair": pair}
     
     def _convert_symbol_to_pair(self, symbol: str) -> str:
-        """转换symbol格式：BTCUSDT -> BTC/USD"""
-        symbol = symbol.replace("USDT", "").replace("USD", "").replace("/", "")
-        if symbol:
-            return f"{symbol}/USD"
-        return self.default_pair
+        """
+        转换symbol格式：支持所有虚拟货币币种
+        - BTCUSDT -> BTC/USD
+        - ETHUSDT -> ETH/USD
+        - 支持所有Roostoo API中的交易对
+        """
+        if not symbol:
+            return self.default_pair
+        
+        # 清理symbol格式
+        symbol_clean = symbol.replace("USDT", "").replace("USD", "").replace("/", "").upper()
+        
+        if not symbol_clean:
+            return self.default_pair
+        
+        # 尝试从Roostoo API获取所有可用交易对
+        try:
+            if self.client:
+                exchange_info = self.client.get_exchange_info()
+                trade_pairs = exchange_info.get('data', {}).get('TradePairs', {})
+                if not trade_pairs:
+                    trade_pairs = exchange_info.get('TradePairs', {})
+                
+                # 查找匹配的交易对
+                # 1. 精确匹配：symbol/USD
+                target_pair = f"{symbol_clean}/USD"
+                if target_pair in trade_pairs:
+                    return target_pair
+                
+                # 2. 查找所有包含该币种的交易对
+                for pair in trade_pairs.keys():
+                    # 提取交易对中的基础币种（如 BTC/USD -> BTC）
+                    base_currency = pair.split('/')[0] if '/' in pair else pair.split('-')[0]
+                    if base_currency.upper() == symbol_clean:
+                        return pair
+                
+                # 3. 如果找不到，尝试构造标准格式
+                print(f"[EnhancedExecutor] ⚠️ 未找到 {symbol_clean} 的交易对，使用构造格式: {target_pair}")
+                return target_pair
+        except Exception as e:
+            print(f"[EnhancedExecutor] ⚠️ 获取交易对列表失败: {e}，使用默认格式")
+        
+        # 回退：使用标准格式
+        return f"{symbol_clean}/USD"
 
 
 if __name__ == "__main__":

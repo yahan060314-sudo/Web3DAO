@@ -99,23 +99,38 @@ Risk Level: {risk_level}
         
         risk_guidelines = {
             "conservative": "Be very cautious. Only trade when there's high confidence. Preserve capital.",
-            "moderate": "Balance risk and reward. Look for good opportunities but don't take excessive risks.",
-            "aggressive": "Be more active in trading. Take calculated risks for higher returns."
+            "moderate": "Balance risk and reward. Look for good opportunities but don't take excessive risks. Make decisions when you have reasonable confidence (70%+).",
+            "aggressive": "Be active in trading. Take calculated risks for higher returns. Make decisions when you have 60%+ confidence. Don't wait for perfect conditions - act on reasonable opportunities."
         }
         
         base_prompt += f"\nRisk Guidelines: {risk_guidelines.get(risk_level, risk_guidelines['moderate'])}\n"
         
-        base_prompt += """
+        # 根据风险等级调整信心度阈值
+        confidence_threshold = "60%" if risk_level == "aggressive" else "70%"
+        
+        # 构建决策哲学部分（使用f-string）
+        decision_philosophy = f"""
+IMPORTANT - Decision Making Philosophy:
+- You should make trading decisions when you have reasonable confidence ({confidence_threshold} confidence is sufficient)
+- For initial decisions and when market data is available, {confidence_threshold} confidence is enough to take action
+- Don't always choose wait/hold - analyze the market and make decisions when opportunities exist
+- Only choose wait/hold when market conditions are truly unclear or unfavorable (not just uncertain)
+- Be proactive in identifying trading opportunities based on available market data
+- Remember: Missing opportunities is also a risk - act when you have reasonable confidence
+
 When making decisions, provide clear reasoning:
 - What market signals you're seeing
 - Why you're making this decision
 - Expected outcome and risk assessment
-
+"""
+        
+        # 构建JSON格式说明部分（不使用f-string，避免花括号冲突）
+        json_format_section = """
 CRITICAL - Decision Format (MANDATORY JSON):
 You MUST output your decision in JSON format ONLY. No exceptions.
 
 Required JSON format:
-{
+{{
   "action": "open_long | close_long | wait | hold",
   "symbol": "BTCUSDT",
   "price_ref": 100000.0,
@@ -127,13 +142,13 @@ Required JSON format:
   "invalidation_condition": "示例：跌破 1h EMA20",
   "slippage_buffer": 0.0002,
   "reasoning": "要点：BTC 多周期一致；MACD>0；EMA20 支撑；放量 + 均线粘连突破；RR≥1:2；冷却期满足；信心 88。"
-}
+}}
 
 For wait/hold actions, you can omit price and position fields, but MUST include reasoning:
-{
+{{
   "action": "wait",
   "reasoning": "Market conditions not favorable, waiting for better entry point"
-}
+}}
 
 CRITICAL RULES:
 - Output MUST be valid JSON (can be wrapped in text, but JSON must be present)
@@ -143,17 +158,21 @@ CRITICAL RULES:
 - Be explicit and clear in your reasoning field
 
 Example valid outputs:
-✓ {"action": "open_long", "symbol": "BTCUSDT", "position_size_usd": 1000, "price_ref": 103000, "reasoning": "..."}
-✓ Based on analysis: {"action": "wait", "reasoning": "..."}
+✓ {{"action": "open_long", "symbol": "BTCUSDT", "position_size_usd": 1000, "price_ref": 103000, "reasoning": "..."}}
+✓ Based on analysis: {{"action": "wait", "reasoning": "..."}}
 ✗ "buy 0.01 BTC" (NOT ACCEPTED - must be JSON)
-✗ I recommend buying (NOT ACCEPTED - must be JSON)"""
+✗ I recommend buying (NOT ACCEPTED - must be JSON)
+"""
+        
+        base_prompt += decision_philosophy + json_format_section
         
         return base_prompt
     
     def create_trading_prompt(
         self,
         market_snapshot: Dict[str, Any],
-        additional_context: Optional[str] = None
+        additional_context: Optional[str] = None,
+        require_decision: bool = False
     ) -> str:
         """
         创建交易决策提示词（包含当前市场数据）
@@ -161,6 +180,7 @@ Example valid outputs:
         Args:
             market_snapshot: 市场快照数据
             additional_context: 额外的上下文信息（可选）
+            require_decision: 是否要求必须做出决策（而不是wait/hold）
             
         Returns:
             格式化的交易提示词
@@ -176,6 +196,10 @@ Example valid outputs:
         
         if additional_context:
             prompt += f"Additional Context: {additional_context}\n\n"
+        
+        # 移除强制决策要求，让AI完全自主决策
+        # if require_decision:
+        #     prompt += """IMPORTANT: You MUST make a trading decision...
         
         prompt += """Based on the above information:
 1. What is your analysis of the current market?

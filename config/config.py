@@ -7,11 +7,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- API Endpoint Configuration ---
-# 支持通过环境变量配置API URL，默认使用mock API（用于测试）
-# 生产环境请设置 ROOSTOO_API_URL 为真实API地址
-# 默认使用 mock API: https://mock-api.roostoo.com
-# 例如：ROOSTOO_API_URL=https://api.roostoo.com (真实API)
-BASE_URL = os.getenv("ROOSTOO_API_URL", "https://mock-api.roostoo.com")
+# 从环境变量读取API URL（必须配置）
+ROOSTOO_API_URL = os.getenv("ROOSTOO_API_URL")
+if not ROOSTOO_API_URL:
+    raise ValueError(
+        "ROOSTOO_API_URL未在.env文件中设置。\n"
+        "请在.env文件中设置: ROOSTOO_API_URL=https://mock-api.roostoo.com"
+    )
+
+BASE_URL = ROOSTOO_API_URL
 
 # --- Request Configuration ---
 # 根据文档，所有POST请求都需要这个Header。将其定义为常量可以避免重复书写和拼写错误。

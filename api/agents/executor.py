@@ -65,7 +65,64 @@ class TradeExecutor(threading.Thread):
             print(f"[Executor] Rate limit: {elapsed:.1f}s < {TRADE_INTERVAL_SECONDS}s, skipping order")
             return
 
-        parsed = self._parse_decision(decision_msg)
+        # 首先检查是否是wait/hold决策（这是有效的决策，不需要执行交易）
+        decision_text = str(decision_msg.get("decision", "")).strip()
+        is_wait_hold = False
+        action_from_json = None
+        
+        # 调试：打印完整决策文本（前500字符）
+        agent = decision_msg.get("agent", "unknown")
+        print(f"[Executor] Debug: 收到决策 (Agent: {agent})")
+        print(f"[Executor] Debug: 决策文本前500字符: {decision_text[:500]}")
+        
+        if decision_text:
+            try:
+                # 尝试解析JSON格式
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    print(f"[Executor] Debug: 提取的JSON: {json_str[:200]}")
+                    data = json.loads(json_str)
+                    action_from_json = data.get("action", "").lower()
+                    print(f"[Executor] Debug: 解析的action: {action_from_json}")
+                    
+                    # 明确检查：只有wait/hold才是wait/hold，其他action（如open_long, close_long等）都不是
+                    if action_from_json in ["wait", "hold"]:
+                        is_wait_hold = True
+                        print(f"[Executor] Debug: 确认为wait/hold决策")
+                    else:
+                        print(f"[Executor] Debug: action={action_from_json}，不是wait/hold，继续正常解析")
+            except (json.JSONDecodeError, ValueError) as e:
+                # JSON解析失败，继续检查自然语言
+                print(f"[Executor] Debug: JSON解析失败: {e}")
+                pass
+            
+            # 检查自然语言格式（只有在JSON解析失败或没有action字段时才检查）
+            if not is_wait_hold and action_from_json is None:
+                text_lower = decision_text.lower()
+                # 更严格的检查：确保文本中明确包含wait/hold，且不包含交易动作
+                wait_hold_keywords = ["hold", "wait", "no action", "no trade", "do nothing"]
+                trade_keywords = ["open_long", "close_long", "buy", "sell", "open", "close"]
+                
+                has_wait_hold = any(word in text_lower for word in wait_hold_keywords)
+                has_trade_action = any(word in text_lower for word in trade_keywords)
+                
+                # 只有在明确有wait/hold且没有交易动作时才认为是wait/hold
+                if has_wait_hold and not has_trade_action:
+                    is_wait_hold = True
+                    print(f"[Executor] Debug: 自然语言确认为wait/hold")
+                elif has_trade_action:
+                    print(f"[Executor] Debug: 检测到交易动作，不是wait/hold")
+        
+        if is_wait_hold:
+            # 非第一个决策的wait/hold，正常处理
+            agent = decision_msg.get("agent", "unknown")
+            print(f"[Executor] ✓ 决策为 wait/hold，无需执行交易 (Agent: {agent})")
+            return
+        else:
+            # 不是wait/hold，正常解析
+            parsed = self._parse_decision(decision_msg)
+        
         if parsed is None:
             decision_text = str(decision_msg.get("decision", ""))[:100]
             json_valid = decision_msg.get("json_valid", None)
@@ -75,12 +132,11 @@ class TradeExecutor(threading.Thread):
                 print(f"    Agent: {decision_msg.get('agent', 'Unknown')}")
                 print(f"    Decision: {decision_text}...")
                 print(f"    Action: REJECTED - JSON format is mandatory")
-                # 这里可以添加回退逻辑（如使用其他Agent的决策）
-                # 但根据用户要求，AI分工还没实现，暂时不添加
                 return
             else:
-                print(f"[Executor] Failed to parse decision: {decision_text}...")
-                print(f"    Note: Decision may be 'wait' or 'hold' (no action needed)")
+                print(f"[Executor] ✗ 决策无法解析（格式错误）")
+                print(f"    Agent: {decision_msg.get('agent', 'Unknown')}")
+                print(f"    Decision: {decision_text}...")
                 return
 
         side = parsed["side"]  # 'BUY' or 'SELL'
@@ -90,42 +146,106 @@ class TradeExecutor(threading.Thread):
         
         # 记录解析结果
         order_type = "LIMIT" if price else "MARKET"
-        print(f"[Executor] Parsed decision:")
-        print(f"  Side: {side}")
-        print(f"  Pair: {pair}")
-        print(f"  Quantity: {quantity}")
-        print(f"  Price: {price if price else 'MARKET'}")
-        print(f"  Order Type: {order_type}")
+        agent = decision_msg.get("agent", "unknown")
+        print(f"[Executor] ========================================")
+        print(f"[Executor] 决策解析成功")
+        print(f"[Executor] ========================================")
+        print(f"[Executor] Agent: {agent}")
+        print(f"[Executor] 方向: {side}")
+        print(f"[Executor] 交易对: {pair}")
+        print(f"[Executor] 数量: {quantity}")
+        print(f"[Executor] 价格: {price if price else 'MARKET'}")
+        print(f"[Executor] 订单类型: {order_type}")
         if "json_data" in parsed:
-            print(f"  Source: JSON format")
+            print(f"[Executor] 来源: JSON格式")
+            json_data = parsed.get("json_data", {})
+            if "confidence" in json_data:
+                print(f"[Executor] 信心度: {json_data['confidence']}%")
+            if "reasoning" in json_data:
+                print(f"[Executor] 理由: {json_data['reasoning'][:100]}...")
         else:
-            print(f"  Source: Natural language format")
+            print(f"[Executor] 来源: 自然语言格式")
+        print(f"[Executor] ========================================")
 
         # 下单（市价为主，若解析到价格则下限价单）
         try:
+            # 验证参数
+            if quantity <= 0:
+                print(f"[Executor] ✗ 无效的数量: {quantity}")
+                return
+            
+            if not pair:
+                print(f"[Executor] ✗ 无效的交易对: {pair}")
+                return
+            
+            print(f"[Executor] ========================================")
+            print(f"[Executor] 准备下单到Roostoo API")
+            print(f"[Executor] ========================================")
+            print(f"[Executor] 交易对: {pair}")
+            print(f"[Executor] 方向: {side}")
+            print(f"[Executor] 数量: {quantity}")
+            print(f"[Executor] 订单类型: {'LIMIT' if price else 'MARKET'}")
+            if price:
+                print(f"[Executor] 限价: {price}")
+            print(f"[Executor] ========================================")
+            
             if self.dry_run:
                 # 测试模式：只打印参数，不真正下单
-                print(f"[Executor] [DRY RUN] Would place order:")
-                print(f"  - pair: {pair}")
-                print(f"  - side: {side}")
-                print(f"  - quantity: {quantity}")
-                print(f"  - price: {price if price else 'MARKET'}")
-                print(f"[Executor] [DRY RUN] Order NOT placed (dry_run=True)")
+                print(f"[Executor] [DRY RUN] 模拟下单（不会真正执行）")
+                print(f"[Executor] [DRY RUN] ✓ 决策已成功解析并准备执行")
                 # 在测试模式下也更新时间戳，避免测试时频繁打印
                 self._last_order_ts = now
             else:
                 # 真实模式：真正下单
+                print(f"[Executor] 正在连接Roostoo API...")
+                if not self.client:
+                    print(f"[Executor] ✗ 错误: RoostooClient未初始化")
+                    return
+                
+                print(f"[Executor] 调用 place_order API...")
                 if price is None:
                     resp = self.client.place_order(pair=pair, side=side, quantity=quantity)
                 else:
                     resp = self.client.place_order(pair=pair, side=side, quantity=quantity, price=price)
                 
-                print(f"[Executor] ✓ Order placed successfully: {resp}")
+                print(f"[Executor] ========================================")
+                print(f"[Executor] ✓ 订单已成功提交到Roostoo API")
+                print(f"[Executor] ========================================")
+                print(f"[Executor] API响应: {resp}")
+                print(f"[Executor] ========================================")
+                
+                # 修复响应格式检查 - 适配Roostoo API的实际响应格式
+                if isinstance(resp, dict):
+                    # Roostoo API的成功标志是 'Success': True
+                    if resp.get('Success') is True:
+                        print(f"[Executor] ✅ 订单执行成功")
+                        order_detail = resp.get('OrderDetail', {})
+                        if order_detail:
+                            order_id = order_detail.get('OrderID')
+                            status = order_detail.get('Status')
+                            if order_id:
+                                print(f"[Executor] 📝 订单ID: {order_id}, 状态: {status}")
+                    else:
+                        # 订单失败
+                        err_msg = resp.get('ErrMsg', 'Unknown error')
+                        print(f"[Executor] ⚠️ 订单失败: {err_msg}")
+                else:
+                    print(f"[Executor] ⚠️ 订单响应格式异常，但已发送到API")
+                
                 self._last_order_ts = now
         except Exception as e:
-            print(f"[Executor] ✗ Failed to place order: {e}")
+            print(f"[Executor] ========================================")
+            print(f"[Executor] ✗ 下单失败")
+            print(f"[Executor] ========================================")
+            print(f"[Executor] 错误类型: {type(e).__name__}")
+            print(f"[Executor] 错误信息: {str(e)}")
+            import traceback
+            print(f"[Executor] 错误堆栈:")
+            traceback.print_exc()
+            print(f"[Executor] ========================================")
             if not self.dry_run:
-                raise  # 真实模式下抛出异常
+                # 真实模式下记录错误但不中断运行
+                print(f"[Executor] ⚠️ 下单失败，但系统继续运行")
 
     def _parse_decision(self, decision_msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -193,15 +313,20 @@ class TradeExecutor(threading.Thread):
             # 转换symbol格式：BTCUSDT -> BTC/USD
             pair = self._convert_symbol_to_pair(symbol) if symbol else self.default_pair
             
-            # 从position_size_usd计算quantity（需要价格）
-            position_size_usd = data.get("position_size_usd")
-            price_ref = data.get("price_ref")
-            
-            if position_size_usd and price_ref:
-                quantity = float(position_size_usd) / float(price_ref)
+            # 优先使用quantity字段，如果没有则从position_size_usd计算
+            quantity = data.get("quantity")
+            if quantity is None:
+                # 从position_size_usd计算quantity（需要价格）
+                position_size_usd = data.get("position_size_usd")
+                price_ref = data.get("price_ref")
+                
+                if position_size_usd and price_ref:
+                    quantity = float(position_size_usd) / float(price_ref)
+                else:
+                    # 如果都没有，使用默认值
+                    quantity = 0.01
             else:
-                # 如果没有position_size_usd，尝试其他字段
-                quantity = data.get("quantity", 0.01)
+                quantity = float(quantity)
             
             # 提取价格（限价单）
             price = data.get("price") or data.get("price_ref")
@@ -287,7 +412,7 @@ class TradeExecutor(threading.Thread):
         quantity = 0.01  # 默认值
         qty_patterns = [
             r'\b(?:buy|sell|purchase)\s+(\d+\.?\d*)',  # "buy 0.01"
-            r'\b(\d+\.?\d*)\s+(?:btc|eth|sol|bnb|doge)',  # "0.01 BTC"
+            r'\b(\d+\.?\d*)\s+([a-z]{2,10})\b',  # "0.01 BTC" 或 "0.01 ETH" 等（支持所有币种）
             r'quantity[:\s]+(\d+\.?\d*)',  # "quantity: 0.01"
             r'amount[:\s]+(\d+\.?\d*)',  # "amount: 0.01"
         ]
@@ -319,23 +444,73 @@ class TradeExecutor(threading.Thread):
                     continue
         
         # 交易对识别
+        # 尝试从文本中提取币种，支持所有币种
         pair = self.default_pair
-        for sym in ["btc", "eth", "sol", "bnb", "doge"]:
-            if re.search(rf'\b{sym}\b', text_lower):
-                pair = f"{sym.upper()}/USD"
-                break
+        try:
+            if self.client:
+                exchange_info = self.client.get_exchange_info()
+                trade_pairs = exchange_info.get('data', {}).get('TradePairs', {})
+                if not trade_pairs:
+                    trade_pairs = exchange_info.get('TradePairs', {})
+                
+                # 查找文本中提到的币种
+                for available_pair in trade_pairs.keys():
+                    base_currency = available_pair.split('/')[0] if '/' in available_pair else available_pair.split('-')[0]
+                    if re.search(rf'\b{base_currency.lower()}\b', text_lower):
+                        pair = available_pair
+                        break
+        except Exception as e:
+            print(f"[Executor] ⚠️ 获取交易对列表失败: {e}，使用默认交易对")
+            # 回退到常见币种
+            for sym in ["btc", "eth", "sol", "bnb", "doge"]:
+                if re.search(rf'\b{sym}\b', text_lower):
+                    pair = f"{sym.upper()}/USD"
+                    break
         
         return {"side": side, "quantity": quantity, "price": price, "pair": pair}
     
     def _convert_symbol_to_pair(self, symbol: str) -> str:
         """
-        转换symbol格式：BTCUSDT -> BTC/USD, BTC/USDT -> BTC/USD
+        转换symbol格式：支持所有虚拟货币币种
+        - BTCUSDT -> BTC/USD
+        - ETHUSDT -> ETH/USD
+        - 支持所有Roostoo API中的交易对
         """
-        # 移除USDT/USD后缀
-        symbol = symbol.replace("USDT", "").replace("USD", "").replace("/", "")
+        if not symbol:
+            return self.default_pair
         
-        # 添加/USD后缀
-        if symbol:
-            return f"{symbol}/USD"
-        return self.default_pair
-
+        # 清理symbol格式
+        symbol_clean = symbol.replace("USDT", "").replace("USD", "").replace("/", "").upper()
+        
+        if not symbol_clean:
+            return self.default_pair
+        
+        # 尝试从Roostoo API获取所有可用交易对
+        try:
+            if self.client:
+                exchange_info = self.client.get_exchange_info()
+                trade_pairs = exchange_info.get('data', {}).get('TradePairs', {})
+                if not trade_pairs:
+                    trade_pairs = exchange_info.get('TradePairs', {})
+                
+                # 查找匹配的交易对
+                # 1. 精确匹配：symbol/USD
+                target_pair = f"{symbol_clean}/USD"
+                if target_pair in trade_pairs:
+                    return target_pair
+                
+                # 2. 查找所有包含该币种的交易对
+                for pair in trade_pairs.keys():
+                    # 提取交易对中的基础币种（如 BTC/USD -> BTC）
+                    base_currency = pair.split('/')[0] if '/' in pair else pair.split('-')[0]
+                    if base_currency.upper() == symbol_clean:
+                        return pair
+                
+                # 3. 如果找不到，尝试构造标准格式
+                print(f"[Executor] ⚠️ 未找到 {symbol_clean} 的交易对，使用构造格式: {target_pair}")
+                return target_pair
+        except Exception as e:
+            print(f"[Executor] ⚠️ 获取交易对列表失败: {e}，使用默认格式")
+        
+        # 回退：使用标准格式
+        return f"{symbol_clean}/USD"
