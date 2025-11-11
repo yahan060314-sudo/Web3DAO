@@ -1,10 +1,17 @@
 import threading
 import time
+import sys
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from api.llm_clients.factory import get_llm_client
 from .bus import MessageBus, Subscription
 from .data_formatter import DataFormatter
+
+# 导入决策频率限制器
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+from utils.rate_limiter import DECISION_RATE_LIMITER
 
 
 class BaseAgent(threading.Thread):
@@ -29,7 +36,7 @@ class BaseAgent(threading.Thread):
                  decision_topic: str,
                  system_prompt: str,
                  poll_timeout: float = 1.0,
-                 decision_interval: float = 10.0,
+                 decision_interval: float = 60.0,
                  llm_provider: Optional[str] = None,
                  allocated_capital: Optional[float] = None):
         super().__init__(name=name)
@@ -160,10 +167,21 @@ Based on this information, what trading action do you recommend? Provide your de
     def _generate_decision(self, user_prompt: str) -> None:
         """
         生成交易决策的核心方法
+        包含决策频率限制（每分钟最多1次）。
         
         Args:
             user_prompt: 用户提示词
         """
+        # 决策频率限制：每分钟最多1次
+        if not DECISION_RATE_LIMITER.can_call():
+            wait_time = DECISION_RATE_LIMITER.wait_time()
+            if wait_time > 0:
+                print(f"[{self.name}] ⚠️ 决策频率限制: 需要等待 {wait_time:.1f} 秒")
+                return  # 跳过本次决策生成
+        
+        # 记录决策生成
+        DECISION_RATE_LIMITER.record_call()
+        
         # 构建 LLM 输入：系统提示 + 对话历史 + 市场数据
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": self.system_prompt}

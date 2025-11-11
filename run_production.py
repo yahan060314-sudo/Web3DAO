@@ -380,7 +380,7 @@ def main():
         bus=mgr.bus,
         market_topic=mgr.market_topic,
         pairs=["BTC/USD"],
-        collect_interval=5.0,
+        collect_interval=12.0,  # 12秒间隔，符合每分钟最多5次API调用的限制
         collect_balance=True,
         collect_ticker=True
     )

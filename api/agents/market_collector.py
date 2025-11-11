@@ -26,7 +26,7 @@ class MarketDataCollector(threading.Thread):
         bus: MessageBus,
         market_topic: str,
         pairs: List[str] = None,
-        collect_interval: float = 5.0,
+        collect_interval: float = 12.0,
         collect_balance: bool = True,
         collect_ticker: bool = True
     ):
@@ -37,7 +37,7 @@ class MarketDataCollector(threading.Thread):
             bus: 消息总线实例
             market_topic: 市场数据发布到的topic名称
             pairs: 要采集的交易对列表，默认 ["BTC/USD"]
-            collect_interval: 采集间隔（秒），默认5秒
+            collect_interval: 采集间隔（秒），默认12秒（符合每分钟最多5次API调用的限制）
             collect_balance: 是否采集账户余额，默认True
             collect_ticker: 是否采集ticker数据，默认True
         """
