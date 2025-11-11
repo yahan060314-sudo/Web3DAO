@@ -70,7 +70,7 @@ class PromptManager:
         self,
         agent_name: str,
         trading_strategy: Optional[str] = None,
-        risk_level: str = "moderate"
+        risk_level: Optional[str] = None
     ) -> str:
         """
         获取系统提示词（定义Agent的角色和行为）
@@ -78,11 +78,15 @@ class PromptManager:
         Args:
             agent_name: Agent名称
             trading_strategy: 交易策略描述（可选）
-            risk_level: 风险等级（conservative/moderate/aggressive）
+            risk_level: 风险等级（conservative/moderate/aggressive），如果为None则自动使用moderate
             
         Returns:
             系统提示词
         """
+        # 如果没有指定risk_level，自动使用moderate（中等风险，适合自动运行）
+        if risk_level is None:
+            risk_level = "moderate"
+        
         base_prompt = f"""You are {agent_name}, an AI trading assistant for Web3 quantitative trading.
 
 Your responsibilities:
@@ -105,8 +109,19 @@ Risk Level: {risk_level}
         
         base_prompt += f"\nRisk Guidelines: {risk_guidelines.get(risk_level, risk_guidelines['moderate'])}\n"
         
-        # 根据风险等级调整信心度阈值
-        confidence_threshold = "60%" if risk_level == "aggressive" else "70%"
+        # 根据风险等级调整信心度阈值（从config读取）
+        from config.config import (
+            CONFIDENCE_THRESHOLD_CONSERVATIVE,
+            CONFIDENCE_THRESHOLD_MODERATE,
+            CONFIDENCE_THRESHOLD_AGGRESSIVE
+        )
+        
+        if risk_level == "conservative":
+            confidence_threshold = f"{CONFIDENCE_THRESHOLD_CONSERVATIVE}%"
+        elif risk_level == "aggressive":
+            confidence_threshold = f"{CONFIDENCE_THRESHOLD_AGGRESSIVE}%"
+        else:  # moderate
+            confidence_threshold = f"{CONFIDENCE_THRESHOLD_MODERATE}%"
         
         # 构建决策哲学部分（使用f-string）
         decision_philosophy = f"""
@@ -129,10 +144,10 @@ When making decisions, provide clear reasoning:
 CRITICAL - Decision Format (MANDATORY JSON):
 You MUST output your decision in JSON format ONLY. No exceptions.
 
-Required JSON format:
+Required JSON format (select the BEST currency from available pairs):
 {{
   "action": "open_long | close_long | wait | hold",
-  "symbol": "BTCUSDT",
+  "symbol": "XXXUSDT",  // Replace XXX with the currency you choose (BTC, ETH, SOL, BNB, DOGE, etc.)
   "price_ref": 100000.0,
   "position_size_usd": 1200.0,
   "stop_loss": 98700.0,
@@ -141,8 +156,16 @@ Required JSON format:
   "confidence": 88,
   "invalidation_condition": "示例：跌破 1h EMA20",
   "slippage_buffer": 0.0002,
-  "reasoning": "要点：BTC 多周期一致；MACD>0；EMA20 支撑；放量 + 均线粘连突破；RR≥1:2；冷却期满足；信心 88。"
+  "reasoning": "要点：分析了所有可用币种，选择XXX因为多周期一致；MACD>0；EMA20 支撑；放量 + 均线粘连突破；RR≥1:2；冷却期满足；信心 88。"
 }}
+
+Position Size Guidelines (Based on Risk Level and Confidence):
+- Conservative: Base position 2% of available capital, max 5%. Adjust based on confidence.
+- Moderate: Base position 5% of available capital, max 15%. Adjust based on confidence.
+- Aggressive: Base position 10% of available capital, max 30%. Adjust based on confidence.
+- Higher confidence (above threshold) allows slightly larger positions, but never exceed max limits.
+- Lower confidence should use smaller positions, closer to base size.
+- Always consider available capital when setting position_size_usd.
 
 For wait/hold actions, you can omit price and position fields, but MUST include reasoning:
 {{
@@ -157,8 +180,9 @@ CRITICAL RULES:
 - If you cannot output JSON, the system will reject your decision
 - Be explicit and clear in your reasoning field
 
-Example valid outputs:
-✓ {{"action": "open_long", "symbol": "BTCUSDT", "position_size_usd": 1000, "price_ref": 103000, "reasoning": "..."}}
+Example valid outputs (note: symbol should be chosen from available currencies):
+✓ {{"action": "open_long", "symbol": "ETHUSDT", "position_size_usd": 1000, "price_ref": 3500, "reasoning": "Analyzed all currencies, ETH shows strongest momentum..."}}
+✓ {{"action": "open_long", "symbol": "SOLUSDT", "position_size_usd": 800, "price_ref": 150, "reasoning": "SOL has best risk-reward ratio among available options..."}}
 ✓ Based on analysis: {{"action": "wait", "reasoning": "..."}}
 ✗ "buy 0.01 BTC" (NOT ACCEPTED - must be JSON)
 ✗ I recommend buying (NOT ACCEPTED - must be JSON)
@@ -206,7 +230,60 @@ Example multi-currency analysis:
 Remember: The API provides access to multiple currencies. Use this advantage to find the best trading opportunities, not just default to BTC.
 """
         
-        base_prompt += decision_philosophy + json_format_section + currency_selection_section
+        # 添加仓位大小控制指导（根据风险等级）
+        from config.config import (
+            BASE_POSITION_SIZE_RATIO_CONSERVATIVE,
+            BASE_POSITION_SIZE_RATIO_MODERATE,
+            BASE_POSITION_SIZE_RATIO_AGGRESSIVE,
+            MAX_POSITION_SIZE_RATIO_CONSERVATIVE,
+            MAX_POSITION_SIZE_RATIO_MODERATE,
+            MAX_POSITION_SIZE_RATIO_AGGRESSIVE,
+            MIN_POSITION_SIZE_USD,
+            ABSOLUTE_MAX_POSITION_SIZE_RATIO,
+            ABSOLUTE_MAX_POSITION_SIZE_USD
+        )
+        
+        if risk_level == "conservative":
+            base_ratio = BASE_POSITION_SIZE_RATIO_CONSERVATIVE
+            max_ratio = MAX_POSITION_SIZE_RATIO_CONSERVATIVE
+        elif risk_level == "aggressive":
+            base_ratio = BASE_POSITION_SIZE_RATIO_AGGRESSIVE
+            max_ratio = MAX_POSITION_SIZE_RATIO_AGGRESSIVE
+        else:  # moderate
+            base_ratio = BASE_POSITION_SIZE_RATIO_MODERATE
+            max_ratio = MAX_POSITION_SIZE_RATIO_MODERATE
+        
+        position_size_guidance = f"""
+Position Size Control (Risk Level: {risk_level.upper()}):
+- Base Position Size: {base_ratio*100:.1f}% of available capital
+- Maximum Position Size: {max_ratio*100:.1f}% of available capital (for this risk level)
+- ABSOLUTE Maximum Position Size: {ABSOLUTE_MAX_POSITION_SIZE_RATIO*100:.1f}% of available capital OR ${ABSOLUTE_MAX_POSITION_SIZE_USD:.0f} USD (whichever is smaller)
+- Minimum Position Size: ${MIN_POSITION_SIZE_USD:.0f} USD
+
+CRITICAL - Position Size Limits (Due to High Volatility in Cryptocurrency Markets):
+- Cryptocurrency markets are highly volatile and unpredictable
+- Even with high confidence, you MUST respect the absolute maximum limits
+- NEVER exceed {ABSOLUTE_MAX_POSITION_SIZE_RATIO*100:.1f}% of available capital OR ${ABSOLUTE_MAX_POSITION_SIZE_USD:.0f} USD per trade
+- This is a hard limit to protect capital in volatile markets
+- High confidence does NOT mean you should use maximum position size
+- Consider that even 90%+ confidence trades can fail in crypto markets
+
+Position Size Adjustment Based on Confidence:
+- If your confidence is at or near the threshold ({confidence_threshold}), use base position size
+- If your confidence is significantly above threshold (+10% or more), you can increase position size, but NEVER exceed the absolute maximum
+- If your confidence is below threshold, reduce position size or consider waiting
+- Always respect BOTH the risk-level maximum AND the absolute maximum limits
+
+Example for {risk_level} strategy:
+- Available capital: $10,000
+- Base position: ${10000 * base_ratio:.0f} (at {confidence_threshold} confidence)
+- Risk-level max position: ${10000 * max_ratio:.0f} (for this risk level)
+- ABSOLUTE max position: ${min(10000 * ABSOLUTE_MAX_POSITION_SIZE_RATIO, ABSOLUTE_MAX_POSITION_SIZE_USD):.0f} (hard limit, never exceed)
+- Even at 95% confidence, do NOT exceed the absolute maximum
+- Remember: Crypto markets are volatile - preserve capital is more important than maximizing single trade size
+"""
+        
+        base_prompt += decision_philosophy + json_format_section + currency_selection_section + position_size_guidance
         
         return base_prompt
     

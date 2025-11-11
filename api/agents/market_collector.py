@@ -55,8 +55,9 @@ class MarketDataCollector(threading.Thread):
         self._stopped = False
         
         # 缓存上次采集的数据，用于对比变化
-        self._last_tickers: Dict[str, Dict[str, Any]] = {}
+        self._last_tickers: Dict[str, Dict[str, Any]] = {}  # 存储所有交易对的ticker数据
         self._last_balance: Optional[Dict[str, Any]] = None
+        self._last_exchange_info: Optional[Dict[str, Any]] = None  # 存储交易所信息（包含所有可用交易对）
     
     def stop(self):
         """停止采集器"""
@@ -65,10 +66,19 @@ class MarketDataCollector(threading.Thread):
     def run(self):
         """主循环：定期采集数据并发布"""
         print(f"[MarketDataCollector] Started. Collecting data every {self.collect_interval}s")
+        print(f"[MarketDataCollector] Will collect data for {len(self.pairs)} trading pairs")
+        
+        # 初始化时获取一次交易所信息（包含所有可用交易对）
+        try:
+            raw_exchange_info = self.client.get_exchange_info()
+            self._last_exchange_info = self.formatter.format_exchange_info(raw_exchange_info)
+            print(f"[MarketDataCollector] Loaded exchange info with {len(self._last_exchange_info.get('trade_pairs', []))} available pairs")
+        except Exception as e:
+            print(f"[MarketDataCollector] Warning: Failed to load exchange info: {e}")
         
         while not self._stopped:
             try:
-                # 采集ticker数据
+                # 采集ticker数据（所有配置的交易对）
                 if self.collect_ticker:
                     self._collect_tickers()
                 
@@ -134,10 +144,26 @@ class MarketDataCollector(threading.Thread):
         获取最新的市场快照（包含所有ticker和余额）
         
         Returns:
-            综合市场快照
+            综合市场快照，包含：
+            - tickers: 所有交易对的ticker数据（字典，key为交易对名称）
+            - balance: 账户余额数据
+            - exchange_info: 交易所信息（包含所有可用交易对）
         """
-        return self.formatter.create_market_snapshot(
-            ticker=self._last_tickers.get(self.pairs[0]) if self.pairs else None,
-            balance=self._last_balance
+        # 构建包含所有ticker数据的快照
+        # 为了向后兼容，如果只有一个ticker，也保留ticker字段（单个）
+        # 同时添加tickers字段（多个）
+        snapshot = self.formatter.create_market_snapshot(
+            ticker=None,  # 不再使用单个ticker，改用tickers字典
+            balance=self._last_balance,
+            exchange_info=self._last_exchange_info
         )
+        
+        # 添加所有ticker数据到快照
+        if self._last_tickers:
+            snapshot["tickers"] = self._last_tickers
+            # 为了向后兼容，如果只有一个ticker，也设置ticker字段
+            if len(self._last_tickers) == 1:
+                snapshot["ticker"] = list(self._last_tickers.values())[0]
+        
+        return snapshot
 
