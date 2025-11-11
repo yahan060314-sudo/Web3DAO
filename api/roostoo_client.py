@@ -51,6 +51,10 @@ class RoostooClient:
         Returns:
             str: 签名字符串
         """
+        # 检查secret_key是否存在
+        if not self.secret_key:
+            raise ValueError("ROOSTOO_SECRET_KEY is not set. Please check your .env file.")
+        
         # 按照key的字母顺序排序参数（与官方示例完全一致）
         # 官方示例: query_string = '&'.join(["{}={}".format(k, params[k]) for k in sorted(params.keys())])
         query_string = '&'.join(["{}={}".format(k, params[k]) for k in sorted(params.keys())])
@@ -224,7 +228,11 @@ class RoostooClient:
             payload['price'] = price
         
         # 生成签名（与官方示例完全一致）
-        signature = self.generate_signature(payload)
+        try:
+            signature = self.generate_signature(payload)
+        except Exception as e:
+            print(f"[RoostooClient] Error generating signature: {e}")
+            raise
         
         # 构建请求头（与官方示例完全一致）
         headers = {
