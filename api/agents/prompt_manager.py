@@ -346,17 +346,27 @@ What opportunities do you see?"""
             return self.create_trading_prompt(market_snapshot)
         
         # 提取账户信息
-        balance = market_snapshot.get("balance", {})
-        account_equity = str(balance.get("total_balance", "0"))
-        available_cash = str(balance.get("available_balance", "0"))
+        balance = market_snapshot.get("balance")
+        # 处理balance为None的情况
+        if balance is None:
+            balance = {}
+        elif not isinstance(balance, dict):
+            # 如果balance不是字典，设置为空字典
+            balance = {}
+        
+        account_equity = str(balance.get("total_balance", "0")) if balance else "0"
+        available_cash = str(balance.get("available_balance", "0")) if balance else "0"
         
         # 格式化持仓信息
         positions_parts = []
-        if "currencies" in balance:
-            for currency, amounts in balance["currencies"].items():
-                total = amounts.get("total", 0)
-                if total > 0:
-                    positions_parts.append(f"{currency}: {total}")
+        if balance and "currencies" in balance:
+            currencies = balance.get("currencies", {})
+            if isinstance(currencies, dict):
+                for currency, amounts in currencies.items():
+                    if isinstance(amounts, dict):
+                        total = amounts.get("total", 0)
+                        if total > 0:
+                            positions_parts.append(f"{currency}: {total}")
         positions = ", ".join(positions_parts) if positions_parts else "无持仓"
         
         # 获取日期

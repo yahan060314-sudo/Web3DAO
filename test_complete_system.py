@@ -125,15 +125,20 @@ def test_roostoo_connection() -> bool:
     try:
         from api.roostoo_client import RoostooClient
         client = RoostooClient()
-        server_time = client.check_server_time()
+        print(f"  API URL: {client.base_url}")
+        
+        # 使用更长的超时时间进行测试
+        server_time = client.check_server_time(timeout=60.0)
         print(f"✓ Server time: {server_time}")
         
-        ticker = client.get_ticker('BTC/USD')
+        ticker = client.get_ticker('BTC/USD', timeout=60.0)
         print(f"✓ Ticker data retrieved")
         print(f"  Raw response structure: {list(ticker.keys())}")
         return True
     except Exception as e:
         print(f"✗ Roostoo API test failed: {e}")
+        print(f"  提示: 如果连接超时，可能是网络问题或API服务器不可用")
+        print(f"  当前使用的URL: {client.base_url if 'client' in locals() else 'N/A'}")
         return False
 
 

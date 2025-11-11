@@ -9,7 +9,8 @@ load_dotenv()
 # --- API Endpoint Configuration ---
 # 支持通过环境变量配置API URL，默认使用mock API（用于测试）
 # 生产环境请设置 ROOSTOO_API_URL 为真实API地址
-# 例如：ROOSTOO_API_URL=https://api.roostoo.com
+# 默认使用 mock API: https://mock-api.roostoo.com
+# 例如：ROOSTOO_API_URL=https://api.roostoo.com (真实API)
 BASE_URL = os.getenv("ROOSTOO_API_URL", "https://mock-api.roostoo.com")
 
 # --- Request Configuration ---

@@ -20,6 +20,7 @@ API_KEY = os.getenv("ROOSTOO_API_KEY")
 SECRET_KEY = os.getenv("ROOSTOO_SECRET_KEY")
 # 支持通过环境变量配置API URL，默认使用mock API（用于测试）
 # 生产环境请设置 ROOSTOO_API_URL 为真实API地址
+# 默认使用 mock API: https://mock-api.roostoo.com
 BASE_URL = os.getenv("ROOSTOO_API_URL", "https://mock-api.roostoo.com")
 
 class RoostooClient:
@@ -90,55 +91,127 @@ class RoostooClient:
         
         return headers, total_params
 
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, timeout: Optional[float] = None, max_retries: int = 3, retry_delay: float = 1.0, **kwargs):
         """
-        通用的请求发送方法，包含统一的错误处理。
+        通用的请求发送方法，包含统一的错误处理和重试机制。
 
         Args:
             method (str): HTTP方法 (GET, POST)。
             path (str): API端点路径。
+            timeout (float, optional): 请求超时时间（秒）。如果为None，使用默认值30秒。
+            max_retries (int): 最大重试次数，默认3次。
+            retry_delay (float): 重试延迟时间（秒），默认1秒。
             **kwargs: 传递给 requests 的其他参数 (headers, params, data)。
         
         Returns:
             Dict: API返回的JSON数据。
         """
         url = f"{self.base_url}{path}"
-        try:
-            response = self.session.request(method, url, **kwargs, timeout=10)
-            response.raise_for_status()  # 如果状态码是4xx或5xx，则抛出异常
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            print(f"HTTP错误: {e.response.status_code} - {e.response.reason}")
-            print(f"URL: {e.response.url}")
-            print(f"响应内容: {e.response.text}")
-            raise
-        except requests.exceptions.RequestException as e:
-            print(f"请求发生异常: {e}")
-            raise
+        
+        # 使用配置的超时时间，如果未指定则使用30秒（比原来的10秒更长）
+        if timeout is None:
+            timeout = 30.0
+        
+        # 重试机制
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                response = self.session.request(method, url, **kwargs, timeout=timeout)
+                response.raise_for_status()  # 如果状态码是4xx或5xx，则抛出异常
+                return response.json()
+            except requests.exceptions.Timeout as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)  # 指数退避
+                    print(f"[RoostooClient] ⚠️ 请求超时 (尝试 {attempt + 1}/{max_retries})，{wait_time:.1f}秒后重试...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"[RoostooClient] ✗ 请求超时，已重试 {max_retries} 次")
+                    print(f"    URL: {url}")
+                    print(f"    超时时间: {timeout}秒")
+                    print(f"    建议: 检查网络连接或增加超时时间")
+                    raise requests.exceptions.RequestException(
+                        f"请求超时 (已重试 {max_retries} 次): {url}\n"
+                        f"超时时间: {timeout}秒\n"
+                        f"可能的原因:\n"
+                        f"  1. 网络连接慢或不稳定\n"
+                        f"  2. API服务器响应慢\n"
+                        f"  3. 防火墙或代理设置问题\n"
+                        f"  4. API服务器暂时不可用\n"
+                        f"建议:\n"
+                        f"  1. 检查网络连接\n"
+                        f"  2. 检查防火墙/代理设置\n"
+                        f"  3. 尝试增加超时时间 (当前: {timeout}秒)\n"
+                        f"  4. 检查API服务器状态"
+                    ) from e
+            except requests.exceptions.ConnectionError as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)
+                    print(f"[RoostooClient] ⚠️ 连接错误 (尝试 {attempt + 1}/{max_retries})，{wait_time:.1f}秒后重试...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"[RoostooClient] ✗ 连接错误，已重试 {max_retries} 次")
+                    print(f"    URL: {url}")
+                    raise requests.exceptions.RequestException(
+                        f"连接错误 (已重试 {max_retries} 次): {url}\n"
+                        f"可能的原因:\n"
+                        f"  1. 网络连接问题\n"
+                        f"  2. DNS解析失败\n"
+                        f"  3. 防火墙阻止连接\n"
+                        f"  4. API服务器不可达\n"
+                        f"建议:\n"
+                        f"  1. 检查网络连接: ping api.roostoo.com\n"
+                        f"  2. 检查DNS设置\n"
+                        f"  3. 检查防火墙/代理设置\n"
+                        f"  4. 尝试使用VPN或更换网络"
+                    ) from e
+            except requests.exceptions.HTTPError as e:
+                # HTTP错误（4xx, 5xx）通常不需要重试，直接抛出
+                print(f"[RoostooClient] ✗ HTTP错误: {e.response.status_code} - {e.response.reason}")
+                print(f"    URL: {e.response.url}")
+                print(f"    响应内容: {e.response.text[:500]}")
+                raise
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)
+                    print(f"[RoostooClient] ⚠️ 请求异常 (尝试 {attempt + 1}/{max_retries})，{wait_time:.1f}秒后重试...")
+                    print(f"    错误: {str(e)}")
+                    time.sleep(wait_time)
+                else:
+                    print(f"[RoostooClient] ✗ 请求异常，已重试 {max_retries} 次")
+                    print(f"    URL: {url}")
+                    print(f"    错误: {str(e)}")
+                    raise
+        
+        # 如果所有重试都失败，抛出最后一个异常
+        if last_exception:
+            raise last_exception
 
     # --- Public API Endpoints ---
 
-    def check_server_time(self) -> Dict:
+    def check_server_time(self, timeout: Optional[float] = None) -> Dict:
         """[RCL_NoVerification] 检查服务器时间"""
-        return self._request('GET', '/v3/serverTime')
+        return self._request('GET', '/v3/serverTime', timeout=timeout)
 
-    def get_exchange_info(self) -> Dict:
+    def get_exchange_info(self, timeout: Optional[float] = None) -> Dict:
         """[RCL_NoVerification] 获取交易所信息，包括交易对、精度等"""
-        return self._request('GET', '/v3/exchangeInfo')
+        return self._request('GET', '/v3/exchangeInfo', timeout=timeout)
 
-    def get_ticker(self, pair: Optional[str] = None) -> Dict:
+    def get_ticker(self, pair: Optional[str] = None, timeout: Optional[float] = None) -> Dict:
         """[RCL_TSCheck] 获取市场Ticker信息"""
         params = {'timestamp': self._get_timestamp()}
         if pair:
             params['pair'] = pair
-        return self._request('GET', '/v3/ticker', params=params)
+        return self._request('GET', '/v3/ticker', params=params, timeout=timeout)
 
-    def get_balance(self) -> Dict:
+    def get_balance(self, timeout: Optional[float] = None) -> Dict:
         """[RCL_TopLevelCheck] 获取账户余额信息"""
         headers, _ = self._sign_request({})
         # 对于GET请求，timestamp需要作为URL参数
         params = {'timestamp': headers.pop('timestamp', self._get_timestamp())} # 从payload中提取timestamp
-        return self._request('GET', '/v3/balance', headers=headers, params={'timestamp': self._get_timestamp()})
+        return self._request('GET', '/v3/balance', headers=headers, params={'timestamp': self._get_timestamp()}, timeout=timeout)
 
     def get_pending_count(self) -> Dict:
         """[RCL_TopLevelCheck] 获取挂单数量"""
