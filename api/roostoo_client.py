@@ -165,6 +165,59 @@ class RoostooClient:
         if last_exception:
             raise last_exception
 
+    def get_trading_rules(self, pair: str = None) -> Dict:
+        """
+        获取交易规则信息
+        """
+        exchange_info = self.get_exchange_info()
+        trade_pairs = exchange_info.get('TradePairs', {})
+        
+        if pair:
+            return trade_pairs.get(pair, {})
+        else:
+            return trade_pairs
+
+    def adjust_quantity(self, pair: str, quantity: float) -> float:
+        """
+        根据交易规则调整数量精度
+        
+        Args:
+            pair: 交易对，如 "BTC/USD"
+            quantity: 原始数量
+            
+        Returns:
+            调整后的数量
+        """
+        try:
+            rules = self.get_trading_rules(pair)
+            if not rules:
+                print(f"[RoostooClient] ⚠️ 未找到交易对 {pair} 的规则，使用默认精度")
+                return round(quantity, 6)  # 默认6位小数
+            
+            amount_precision = rules.get('AmountPrecision', 6)
+            
+            # 调整精度
+            adjusted_quantity = round(quantity, amount_precision)
+            
+            print(f"[RoostooClient] 数量调整: {quantity} -> {adjusted_quantity} (精度: {amount_precision}位)")
+            return adjusted_quantity
+            
+        except Exception as e:
+            print(f"[RoostooClient] ❌ 调整数量精度失败: {e}")
+            return round(quantity, 6)  # 失败时使用默认精度
+
+    def get_current_price(self, pair: str) -> float:
+        """
+        获取当前价格
+        """
+        try:
+            ticker = self.get_ticker(pair)
+            price_data = ticker.get('Data', {}).get(pair, {})
+            return price_data.get('LastPrice', 0.0)
+        except Exception as e:
+            print(f"[RoostooClient] ❌ 获取价格失败: {e}")
+            return 0.0
+
     # --- Public API Endpoints ---
     
     def check_server_time(self) -> Dict:
@@ -194,13 +247,16 @@ class RoostooClient:
 
     def place_order(self, pair: str, side: str, quantity: float, price: Optional[float] = None) -> Dict:
         """
-        [RCL_TopLevelCheck] 下新订单（市价或限价）
+        [RCL_TopLevelCheck] 下新订单（市价或限价）- 带精度调整
         """
+        # 调整数量精度
+        adjusted_quantity = self.adjust_quantity(pair, quantity)
+        
         # 构建payload
         payload = {
             "pair": pair,
             "side": side.upper(),
-            "quantity": str(quantity),
+            "quantity": str(adjusted_quantity),  # 使用调整后的数量
         }
         
         if price is not None:
@@ -216,7 +272,8 @@ class RoostooClient:
         print(f"[RoostooClient] 下单请求:")
         print(f"  交易对: {pair}")
         print(f"  方向: {side}")
-        print(f"  数量: {quantity}")
+        print(f"  原始数量: {quantity}")
+        print(f"  调整后数量: {adjusted_quantity}")
         print(f"  类型: {payload['type']}")
         if price:
             print(f"  价格: {price}")
@@ -252,22 +309,42 @@ class RoostooClient:
 
 
 # 测试函数
-def test_place_order():
-    """测试下单功能"""
+def test_precision_and_order():
+    """测试精度调整和下单功能"""
     client = RoostooClient()
     
+    print("🔍 测试交易数量精度调整和下单")
+    print("=" * 50)
+    
     try:
-        print("测试市价买入单...")
+        # 获取交易规则
+        rules = client.get_trading_rules("BTC/USD")
+        print("📋 BTC/USD 交易规则:")
+        print(f"  数量精度: {rules.get('AmountPrecision')} 位小数")
+        print(f"  价格精度: {rules.get('PricePrecision')} 位小数") 
+        print(f"  最小订单: ${rules.get('MiniOrder', 1.0)}")
+        
+        # 测试问题数量的调整
+        problem_quantity = 0.02844915410707636
+        print(f"\n🧪 测试问题数量调整:")
+        print(f"  原始数量: {problem_quantity}")
+        adjusted = client.adjust_quantity("BTC/USD", problem_quantity)
+        print(f"  调整后数量: {adjusted}")
+        
+        # 测试下单
+        print(f"\n🚀 测试修正后的下单:")
         result = client.place_order(
             pair="BTC/USD",
-            side="BUY", 
-            quantity=0.001
+            side="BUY",
+            quantity=problem_quantity,  # 原始问题数量
+            price=105451.29
         )
-        print(f"下单结果: {result}")
+        print(f"✅ 下单结果: {result}")
         return True
+        
     except Exception as e:
-        print(f"下单测试失败: {e}")
+        print(f"❌ 测试失败: {e}")
         return False
 
 if __name__ == "__main__":
-    test_place_order()
+    test_precision_and_order()
