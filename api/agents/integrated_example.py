@@ -2,15 +2,17 @@
 集成示例 - 展示如何使用所有模块进行完整的交易流程
 
 这个示例展示了：
-1. 如何使用MarketDataCollector采集Roostoo数据
-2. 如何使用PromptManager管理prompt
-3. 如何创建和运行Agent
-4. 如何执行交易决策
+1. 从API获取初始本金并均分给两个Agent
+2. 如何使用MarketDataCollector采集Roostoo数据
+3. 如何使用PromptManager管理prompt
+4. 如何创建和运行Agent
+5. 如何执行交易决策
 
 运行方式：
     python -m api.agents.integrated_example
 """
 
+import os
 import time
 from typing import List
 
@@ -18,6 +20,37 @@ from .manager import AgentManager
 from .executor import TradeExecutor
 from .market_collector import MarketDataCollector
 from .prompt_manager import PromptManager
+from .capital_manager import CapitalManager
+from api.roostoo_client import RoostooClient
+
+
+def get_initial_capital_from_api() -> float:
+    """
+    从API获取初始本金
+    
+    Returns:
+        初始本金（USD），如果获取失败则返回默认值50000
+    """
+    try:
+        client = RoostooClient()
+        exchange_info = client.get_exchange_info()
+        
+        # 从API响应中提取InitialWallet
+        if isinstance(exchange_info, dict) and "InitialWallet" in exchange_info:
+            initial_wallet = exchange_info["InitialWallet"]
+            if isinstance(initial_wallet, dict) and "USD" in initial_wallet:
+                initial_capital = float(initial_wallet["USD"])
+                print(f"[InitialCapital] ✓ 从API获取初始本金: {initial_capital:.2f} USD")
+                return initial_capital
+        
+        # 如果API响应格式不符合预期
+        print(f"[InitialCapital] ⚠️ API响应格式不符合预期，使用默认值50000")
+        return 50000.0
+        
+    except Exception as e:
+        print(f"[InitialCapital] ⚠️ 从API获取初始本金失败: {e}")
+        print(f"[InitialCapital] 使用默认值: 50000.0 USD")
+        return 50000.0
 
 
 def main():
@@ -27,6 +60,11 @@ def main():
     print("=" * 60)
     print("Web3 Quant Trading System - Integrated Example")
     print("=" * 60)
+    
+    # 0. 获取初始本金并创建资本管理器
+    print("\n[0] Getting initial capital and setting up capital manager...")
+    initial_capital = get_initial_capital_from_api()
+    capital_manager = CapitalManager(initial_capital=initial_capital)
     
     # 1. 初始化消息总线和Agent管理器
     print("\n[1] Initializing Agent Manager...")
@@ -45,7 +83,6 @@ def main():
         trading_strategy="Focus on capital preservation. Only trade on strong signals.",
         risk_level="conservative"
     )
-    mgr.add_agent(name="conservative_agent", system_prompt=conservative_prompt)
     
     # Agent 2: 平衡型交易Agent
     balanced_prompt = prompt_mgr.get_system_prompt(
@@ -53,15 +90,31 @@ def main():
         trading_strategy="Balance risk and reward. Look for good opportunities.",
         risk_level="moderate"
     )
-    mgr.add_agent(name="balanced_agent", system_prompt=balanced_prompt)
     
-    # Agent 3: 激进型交易Agent（可选）
-    # aggressive_prompt = prompt_mgr.get_system_prompt(
-    #     agent_name="AggressiveAgent",
-    #     trading_strategy="Be active in trading. Take calculated risks.",
-    #     risk_level="aggressive"
-    # )
-    # mgr.add_agent(name="aggressive_agent", system_prompt=aggressive_prompt)
+    # 3.5. 均分本金给两个Agent（只在开始时分配一次）
+    print("\n[3.5] Allocating capital to agents...")
+    agent_names = ["conservative_agent", "balanced_agent"]
+    allocations = capital_manager.allocate_equal(agent_names)
+    capital_manager.print_summary()
+    
+    # 为每个Agent分配资金额度
+    conservative_capital = allocations.get("conservative_agent", initial_capital / 2)
+    balanced_capital = allocations.get("balanced_agent", initial_capital / 2)
+    
+    # 添加Agent并传入分配的资金额度
+    mgr.add_agent(
+        name="conservative_agent", 
+        system_prompt=conservative_prompt,
+        allocated_capital=conservative_capital
+    )
+    mgr.add_agent(
+        name="balanced_agent", 
+        system_prompt=balanced_prompt,
+        allocated_capital=balanced_capital
+    )
+    
+    # 注意：两个Agent现在独立运行，各自管理自己的资金
+    # 资金分配只在开始时进行一次，之后两个Agent的操作完全独立
     
     # 4. 启动Agent
     print("[4] Starting Agents...")
