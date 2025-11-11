@@ -344,30 +344,52 @@ def main():
     logger.info("\n[10] 等待初始市场数据...")
     time.sleep(8)
     
-    # 13. 发送初始交易提示（强调需要做出决策）
-    logger.info("[11] 发送初始交易提示（要求做出决策）...")
+    # 13. 发送初始交易提示（强制要求交易决策，不允许wait/hold）
+    logger.info("[11] 发送初始交易提示（强制要求交易决策）...")
     market_snapshot = collector.get_latest_snapshot()
     if market_snapshot:
-        # 创建强调需要决策的提示
+        # 创建强制要求交易的提示
         market_text = prompt_mgr.formatter.format_for_llm(market_snapshot)
-        initial_prompt = f"""Analyze the current market situation and make a trading decision NOW.
+        current_price = None
+        if market_snapshot.get("ticker") and market_snapshot["ticker"].get("price"):
+            current_price = market_snapshot["ticker"]["price"]
+        
+        initial_prompt = f"""You MUST make a trading decision NOW. This is a MANDATORY initial trade.
 
+Current Market Data:
 {market_text}
 
-IMPORTANT: This is the initial decision request. You MUST make a trading decision based on the available market data:
-- If you see a reasonable opportunity (70%+ confidence), choose "open_long" or "close_long"
-- Only choose "wait" or "hold" if market conditions are truly unclear or unfavorable
-- Don't be overly cautious - make a decision based on the current market data
+CRITICAL REQUIREMENT - You MUST choose either "open_long" (BUY) or "close_long" (SELL):
+- DO NOT choose "wait" or "hold" for this initial decision
+- Based on the current market data, make a concrete trading decision
+- If price seems reasonable, choose "open_long" to start trading
+- If you have concerns, still make a decision with smaller position size
+- This is the system's first decision - you must take action
 
-Based on the above information:
-1. What is your analysis of the current market?
-2. What trading action do you recommend? (MUST be a concrete decision, not always wait)
-3. What is your reasoning?
+Required JSON format:
+{{
+  "action": "open_long",
+  "symbol": "BTCUSDT",
+  "price_ref": {current_price if current_price else 100000},
+  "position_size_usd": 500.0,
+  "confidence": 75,
+  "reasoning": "Initial trading decision based on current market conditions"
+}}
 
-Provide your decision in JSON format as specified in your system prompt."""
+OR if you believe market is declining:
+{{
+  "action": "close_long",
+  "symbol": "BTCUSDT",
+  "price_ref": {current_price if current_price else 100000},
+  "position_size_usd": 500.0,
+  "confidence": 75,
+  "reasoning": "Initial trading decision - market conditions suggest selling"
+}}
+
+You MUST output one of these actions. "wait" or "hold" is NOT acceptable for this initial decision."""
         
         mgr.broadcast_prompt(role="user", content=initial_prompt)
-        logger.info("✓ 初始交易提示已发送，要求做出决策")
+        logger.info("✓ 初始交易提示已发送（强制要求交易决策，不允许wait/hold）")
     
     # 14. 主循环
     logger.info("\n" + "=" * 80)
