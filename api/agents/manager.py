@@ -1,6 +1,6 @@
 import threading
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from .bus import MessageBus
 from .base_agent import BaseAgent
