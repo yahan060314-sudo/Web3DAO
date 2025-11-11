@@ -69,34 +69,88 @@ class TradeExecutor(threading.Thread):
         # 首先检查是否是wait/hold决策（这是有效的决策，不需要执行交易）
         decision_text = str(decision_msg.get("decision", "")).strip()
         is_wait_hold = False
+        action_from_json = None
+        
+        # 调试：打印完整决策文本（前500字符）
+        agent = decision_msg.get("agent", "unknown")
+        print(f"[Executor] Debug: 收到决策 (Agent: {agent})")
+        print(f"[Executor] Debug: 决策文本前500字符: {decision_text[:500]}")
+        
         if decision_text:
             try:
                 # 尝试解析JSON格式
                 json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(0)
+                    print(f"[Executor] Debug: 提取的JSON: {json_str[:200]}")
                     data = json.loads(json_str)
-                    action = data.get("action", "").lower()
-                    if action in ["wait", "hold"]:
+                    action_from_json = data.get("action", "").lower()
+                    print(f"[Executor] Debug: 解析的action: {action_from_json}")
+                    
+                    # 明确检查：只有wait/hold才是wait/hold，其他action（如open_long, close_long等）都不是
+                    if action_from_json in ["wait", "hold"]:
                         is_wait_hold = True
-            except (json.JSONDecodeError, ValueError):
+                        print(f"[Executor] Debug: 确认为wait/hold决策")
+                    else:
+                        print(f"[Executor] Debug: action={action_from_json}，不是wait/hold，继续正常解析")
+            except (json.JSONDecodeError, ValueError) as e:
+                # JSON解析失败，继续检查自然语言
+                print(f"[Executor] Debug: JSON解析失败: {e}")
                 pass
             
-            # 检查自然语言格式
-            if not is_wait_hold:
+            # 检查自然语言格式（只有在JSON解析失败或没有action字段时才检查）
+            if not is_wait_hold and action_from_json is None:
                 text_lower = decision_text.lower()
-                if any(word in text_lower for word in ["hold", "wait", "no action", "no trade", "do nothing"]):
+                # 更严格的检查：确保文本中明确包含wait/hold，且不包含交易动作
+                wait_hold_keywords = ["hold", "wait", "no action", "no trade", "do nothing"]
+                trade_keywords = ["open_long", "close_long", "buy", "sell", "open", "close"]
+                
+                has_wait_hold = any(word in text_lower for word in wait_hold_keywords)
+                has_trade_action = any(word in text_lower for word in trade_keywords)
+                
+                # 只有在明确有wait/hold且没有交易动作时才认为是wait/hold
+                if has_wait_hold and not has_trade_action:
                     is_wait_hold = True
+                    print(f"[Executor] Debug: 自然语言确认为wait/hold")
+                elif has_trade_action:
+                    print(f"[Executor] Debug: 检测到交易动作，不是wait/hold")
         
         # 如果是第一个决策且是wait/hold，强制转换为一个合理的交易决策
         if is_wait_hold and not self._first_decision_processed:
             agent = decision_msg.get("agent", "unknown")
             print(f"[Executor] ⚠️ 第一个决策是 wait/hold，强制转换为初始交易决策 (Agent: {agent})")
-            # 获取当前价格
+            # 获取当前价格（尝试多种路径）
             market_snapshot = decision_msg.get("market_snapshot")
             current_price = None
-            if market_snapshot and market_snapshot.get("ticker"):
-                current_price = market_snapshot["ticker"].get("price")
+            
+            # 调试：打印market_snapshot结构
+            if market_snapshot:
+                print(f"[Executor] Debug: market_snapshot keys: {list(market_snapshot.keys()) if isinstance(market_snapshot, dict) else 'not a dict'}")
+            
+            # 尝试从不同路径获取价格
+            if market_snapshot:
+                # 路径1: market_snapshot["ticker"]["price"]
+                if isinstance(market_snapshot, dict):
+                    ticker = market_snapshot.get("ticker")
+                    if ticker and isinstance(ticker, dict):
+                        current_price = ticker.get("price")
+                    
+                    # 路径2: market_snapshot["price"] (直接)
+                    if not current_price:
+                        current_price = market_snapshot.get("price")
+                    
+                    # 路径3: 从决策JSON中获取price_ref
+                    if not current_price and decision_text:
+                        try:
+                            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+                            if json_match:
+                                json_str = json_match.group(0)
+                                data = json.loads(json_str)
+                                price_ref = data.get("price_ref")
+                                if price_ref:
+                                    current_price = float(price_ref)
+                        except (json.JSONDecodeError, ValueError, TypeError):
+                            pass
             
             if current_price:
                 # 强制创建一个买入决策（小额，保守）
@@ -110,9 +164,41 @@ class TradeExecutor(threading.Thread):
                 self._first_decision_processed = True
                 # 跳过后续解析，直接使用强制创建的决策
             else:
-                print(f"[Executor] ⚠️ 无法获取价格，跳过强制交易")
-                self._first_decision_processed = True
-                return
+                print(f"[Executor] ⚠️ 无法获取价格，尝试从API获取...")
+                # 如果无法从market_snapshot获取，尝试从API获取
+                try:
+                    if not self.dry_run and self.client:
+                        ticker = self.client.get_ticker(pair=self.default_pair)
+                        # 尝试从ticker响应中提取价格
+                        if isinstance(ticker, dict):
+                            data = ticker.get("Data", ticker.get("data", ticker))
+                            if isinstance(data, dict):
+                                pair_data = data.get(self.default_pair, data)
+                                if isinstance(pair_data, dict):
+                                    current_price = pair_data.get("LastPrice") or pair_data.get("price")
+                        
+                        if current_price:
+                            current_price = float(current_price)
+                            print(f"[Executor] 从API获取价格成功: {current_price}")
+                            parsed = {
+                                "side": "BUY",
+                                "quantity": 0.01,
+                                "price": None,  # 市价单
+                                "pair": self.default_pair
+                            }
+                            self._first_decision_processed = True
+                        else:
+                            print(f"[Executor] ⚠️ 从API也无法获取价格，跳过强制交易")
+                            self._first_decision_processed = True
+                            return
+                    else:
+                        print(f"[Executor] ⚠️ 无法获取价格（dry_run模式或无客户端），跳过强制交易")
+                        self._first_decision_processed = True
+                        return
+                except Exception as e:
+                    print(f"[Executor] ⚠️ 从API获取价格失败: {e}，跳过强制交易")
+                    self._first_decision_processed = True
+                    return
         elif is_wait_hold:
             # 非第一个决策的wait/hold，正常处理
             agent = decision_msg.get("agent", "unknown")
