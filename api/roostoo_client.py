@@ -36,27 +36,44 @@ class RoostooClient:
         
         print(f"[RoostooClient] ✓ 使用API: {self.base_url}")
 
-    def _get_timestamp(self) -> str:
-        """生成13位毫秒级时间戳字符串。"""
-        return str(int(time.time() * 1000))
+    def _get_timestamp(self) -> int:
+        """生成13位毫秒级时间戳整数（与官方示例保持一致）。"""
+        return int(time.time() * 1000)
 
-    def _generate_signature(self, param_string: str) -> str:
+    def _sign_request(self, payload: Dict[str, Any]) -> Tuple[Dict[str, str], str, int]:
         """
-        生成HMAC SHA256签名。
-        
+        为RCL_TopLevelCheck请求生成签名和头部。
+        严格遵循官方文档中的签名规则，与官方python_demo.py保持一致。
+
         Args:
             param_string: 参数字符串（GET的查询字符串或POST的请求体）
             
         Returns:
-            HMAC SHA256签名
+            Tuple[Dict[str, str], str, int]: 一个元组，包含(请求头, 用于POST data的参数字符串, 时间戳整数)。
         """
+        # 1. 添加时间戳（整数，与官方示例保持一致）
+        timestamp = self._get_timestamp()
+        # 创建新的字典，避免修改原始payload
+        signed_payload = payload.copy()
+        signed_payload['timestamp'] = timestamp
+
+        # 2. 按照key的字母顺序排序参数（与官方示例完全一致）
+        # 官方示例: query_string = '&'.join(["{}={}".format(k, params[k]) for k in sorted(params.keys())])
+        sorted_keys = sorted(signed_payload.keys())
+        
+        # 3. 拼接成 "key1=value1&key2=value2" 格式的字符串
+        # 使用与官方示例完全相同的格式：format会将整数自动转换为字符串
+        # 例如：timestamp=1580774512000
+        query_string = '&'.join(["{}={}".format(k, signed_payload[k]) for k in sorted_keys])
+
+        # 4. 使用HMAC-SHA256算法生成签名（与官方示例完全一致）
         signature = hmac.new(
             self.secret_key.encode('utf-8'),
-            param_string.encode('utf-8'),
+            query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
         
-        return signature
+        return headers, query_string, timestamp
 
     def _build_param_string(self, params: Dict[str, Any]) -> str:
         """
@@ -149,38 +166,30 @@ class RoostooClient:
         timestamp = self._get_timestamp()
         params = {'timestamp': timestamp}
         
-        # 构建查询字符串（按字母顺序排序）
-        param_string = self._build_param_string(params)
+        重要：对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
+        和签名时使用的完全一致。与官方python_demo.py的实现保持一致。
+        """
+        # 生成签名（与官方示例完全一致）
+        # _sign_request会在内部添加timestamp，确保签名和请求使用相同的时间戳
+        headers, query_string, _ = self._sign_request({})
         
-        # 生成签名（基于完整的查询字符串）
-        signature = self._generate_signature(param_string)
-        
-        headers = {
-            'RST-API-KEY': self.api_key,
-            'MSG-SIGNATURE': signature
-        }
-        
-        print(f"[RoostooClient] 余额请求签名调试:")
-        print(f"  参数字符串: {param_string}")
-        print(f"  签名: {signature}")
-        print(f"  请求头: {headers}")
-        
-        return self._request('GET', '/v3/balance', headers=headers, params=params, timeout=timeout)
+        # 对于GET请求，直接使用签名时生成的query_string拼接到URL
+        # 确保服务器验证签名时使用的查询字符串和签名时使用的完全一致
+        return self._request('GET', f'/v3/balance?{query_string}', headers=headers, timeout=timeout)
 
     def get_pending_count(self, timeout: Optional[float] = None) -> Dict:
         """[RCL_TopLevelCheck] 获取挂单数量"""
         timestamp = self._get_timestamp()
         params = {'timestamp': timestamp}
         
-        param_string = self._build_param_string(params)
-        signature = self._generate_signature(param_string)
+        重要：对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
+        和签名时使用的完全一致。与官方python_demo.py的实现保持一致。
+        """
+        # 生成签名（与官方示例完全一致）
+        headers, query_string, _ = self._sign_request({})
         
-        headers = {
-            'RST-API-KEY': self.api_key,
-            'MSG-SIGNATURE': signature
-        }
-        
-        return self._request('GET', '/v3/pending_count', headers=headers, params=params, timeout=timeout)
+        # 对于GET请求，直接使用签名时生成的query_string拼接到URL
+        return self._request('GET', f'/v3/pending_count?{query_string}', headers=headers, timeout=timeout)
 
     def place_order(self, pair: str, side: str, quantity: float, price: Optional[float] = None) -> Dict:
         """
