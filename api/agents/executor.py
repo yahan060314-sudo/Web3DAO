@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 import re
@@ -43,6 +44,34 @@ class TradeExecutor(threading.Thread):
         self._stopped = False
         self._last_order_ts: Optional[float] = None
         self._first_decision_processed = False  # 标记是否已处理第一个决策
+        # 环境开关：是否允许将首个 wait/hold 强制转换为初始买入
+        self.force_initial_trade = os.getenv("FORCE_INITIAL_TRADE", "false").lower() == "true"
+        # 交易风控参数（可通过环境变量调整）
+        # 信心度阈值（百分比，默认60）
+        try:
+            self.conf_threshold_pct = float(os.getenv("CONFIDENCE_THRESHOLD_PERCENT", "60"))
+        except ValueError:
+            self.conf_threshold_pct = 60.0
+        # 手续费与最小盈利阈值（目前记录在日志中，供上层策略参考）
+        try:
+            self.fee_rate = float(os.getenv("FEE_RATE", "0.004"))  # 0.4%（含双边+滑点）
+        except ValueError:
+            self.fee_rate = 0.004
+        try:
+            self.min_profit_factor = float(os.getenv("MIN_PROFIT_FACTOR", "3"))  # 最小盈利=手续费x3
+        except ValueError:
+            self.min_profit_factor = 3.0
+        # 动态冷却：按交易金额分档（秒）
+        # 小额：3-4分钟；中额：~6分钟；大额：8-10分钟
+        self.small_trade_usd = float(os.getenv("SMALL_TRADE_USD", "500"))
+        self.large_trade_usd = float(os.getenv("LARGE_TRADE_USD", "5000"))
+        self.cooldown_small_min = int(os.getenv("COOLDOWN_SMALL_MIN", "180"))
+        self.cooldown_small_max = int(os.getenv("COOLDOWN_SMALL_MAX", "240"))
+        self.cooldown_mid = int(os.getenv("COOLDOWN_MID", "360"))
+        self.cooldown_large_min = int(os.getenv("COOLDOWN_LARGE_MIN", "480"))
+        self.cooldown_large_max = int(os.getenv("COOLDOWN_LARGE_MAX", "600"))
+        # 记录上次交易推断的USD金额，用于日志
+        self._last_order_usd: Optional[float] = None
 
     def stop(self):
         self._stopped = True
@@ -64,10 +93,18 @@ class TradeExecutor(threading.Thread):
             self._first_decision_processed = False
 
         now = time.time()
-        if self._last_order_ts is not None and (now - self._last_order_ts) < TRADE_INTERVAL_SECONDS:
-            # 限频：忽略本次决策
+        # 动态冷却：基于上次下单时间与动态阈值（不小于TRADE_INTERVAL_SECONDS）
+        effective_cooldown = TRADE_INTERVAL_SECONDS
+        if self._last_order_usd is not None:
+            if self._last_order_usd <= self.small_trade_usd:
+                effective_cooldown = max(effective_cooldown, self.cooldown_small_min)
+            elif self._last_order_usd >= self.large_trade_usd:
+                effective_cooldown = max(effective_cooldown, self.cooldown_large_min)
+            else:
+                effective_cooldown = max(effective_cooldown, self.cooldown_mid)
+        if self._last_order_ts is not None and (now - self._last_order_ts) < effective_cooldown:
             elapsed = now - self._last_order_ts
-            print(f"[Executor] Rate limit: {elapsed:.1f}s < {TRADE_INTERVAL_SECONDS}s, skipping order")
+            print(f"[Executor] Rate limit: {elapsed:.1f}s < {effective_cooldown}s, skipping order")
             return
 
         # 首先检查是否是wait/hold决策（这是有效的决策，不需要执行交易）
@@ -119,12 +156,90 @@ class TradeExecutor(threading.Thread):
                 elif has_trade_action:
                     print(f"[Executor] Debug: 检测到交易动作，不是wait/hold")
         
-        # 如果是第一个决策且是wait/hold，这是合理的保守选择，直接接受
-        if is_wait_hold and not self._first_decision_processed:
+        # 如果启用环境开关：第一个决策且是wait/hold，强制转换为一个合理的交易决策
+        if self.force_initial_trade and is_wait_hold and not self._first_decision_processed:
             agent = decision_msg.get("agent", "unknown")
-            print(f"[Executor] ✓ 第一个决策是 wait/hold，这是合理的保守选择 (Agent: {agent})")
-            self._first_decision_processed = True
-            return
+            print(f"[Executor] ⚠️ 第一个决策是 wait/hold，基于配置 FORCE_INITIAL_TRADE=true 强制转换为初始交易决策 (Agent: {agent})")
+            # 获取当前价格（尝试多种路径）
+            market_snapshot = decision_msg.get("market_snapshot")
+            current_price = None
+            
+            # 调试：打印market_snapshot结构
+            if market_snapshot:
+                print(f"[Executor] Debug: market_snapshot keys: {list(market_snapshot.keys()) if isinstance(market_snapshot, dict) else 'not a dict'}")
+            
+            # 尝试从不同路径获取价格
+            if market_snapshot:
+                # 路径1: market_snapshot["ticker"]["price"]
+                if isinstance(market_snapshot, dict):
+                    ticker = market_snapshot.get("ticker")
+                    if ticker and isinstance(ticker, dict):
+                        current_price = ticker.get("price")
+                    
+                    # 路径2: market_snapshot["price"] (直接)
+                    if not current_price:
+                        current_price = market_snapshot.get("price")
+                    
+                    # 路径3: 从决策JSON中获取price_ref
+                    if not current_price and decision_text:
+                        try:
+                            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+                            if json_match:
+                                json_str = json_match.group(0)
+                                data = json.loads(json_str)
+                                price_ref = data.get("price_ref")
+                                if price_ref:
+                                    current_price = float(price_ref)
+                        except (json.JSONDecodeError, ValueError, TypeError):
+                            pass
+            
+            if current_price:
+                # 强制创建一个买入决策（小额，保守）
+                print(f"[Executor] 强制创建初始买入决策: 价格={current_price}, 数量=0.01 BTC")
+                parsed = {
+                    "side": "BUY",
+                    "quantity": 0.01,
+                    "price": None,  # 市价单
+                    "pair": self.default_pair
+                }
+                self._first_decision_processed = True
+                # 跳过后续解析，直接使用强制创建的决策
+            else:
+                print(f"[Executor] ⚠️ 无法获取价格，尝试从API获取...")
+                # 如果无法从market_snapshot获取，尝试从API获取
+                try:
+                    if not self.dry_run and self.client:
+                        ticker = self.client.get_ticker(pair=self.default_pair)
+                        # 尝试从ticker响应中提取价格
+                        if isinstance(ticker, dict):
+                            data = ticker.get("Data", ticker.get("data", ticker))
+                            if isinstance(data, dict):
+                                pair_data = data.get(self.default_pair, data)
+                                if isinstance(pair_data, dict):
+                                    current_price = pair_data.get("LastPrice") or pair_data.get("price")
+                        
+                        if current_price:
+                            current_price = float(current_price)
+                            print(f"[Executor] 从API获取价格成功: {current_price}")
+                            parsed = {
+                                "side": "BUY",
+                                "quantity": 0.01,
+                                "price": None,  # 市价单
+                                "pair": self.default_pair
+                            }
+                            self._first_decision_processed = True
+                        else:
+                            print(f"[Executor] ⚠️ 从API也无法获取价格，跳过强制交易")
+                            self._first_decision_processed = True
+                            return
+                    else:
+                        print(f"[Executor] ⚠️ 无法获取价格（dry_run模式或无客户端），跳过强制交易")
+                        self._first_decision_processed = True
+                        return
+                except Exception as e:
+                    print(f"[Executor] ⚠️ 从API获取价格失败: {e}，跳过强制交易")
+                    self._first_decision_processed = True
+                    return
         elif is_wait_hold:
             # 非第一个决策的wait/hold，正常处理
             agent = decision_msg.get("agent", "unknown")
@@ -133,6 +248,10 @@ class TradeExecutor(threading.Thread):
         else:
             # 不是wait/hold，正常解析
             parsed = self._parse_decision(decision_msg)
+        
+        # 标记第一个决策已处理（无论是否成功解析）
+        if not self._first_decision_processed:
+            self._first_decision_processed = True
         
         if parsed is None:
             decision_text = str(decision_msg.get("decision", ""))[:100]
@@ -153,51 +272,20 @@ class TradeExecutor(threading.Thread):
         side = parsed["side"]  # 'BUY' or 'SELL'
         quantity = parsed["quantity"]
         price = parsed.get("price")
-        pair = parsed.get("pair")
+        pair = parsed.get("pair", self.default_pair)
+        json_data = parsed.get("json_data") if isinstance(parsed, dict) else None
         
-        # 如果pair为空或无效，拒绝执行（保守处理，不使用default_pair）
-        if not pair:
-            print(f"[Executor] ✗ 决策中缺少交易对信息，拒绝执行（保守处理）")
-            print(f"    Agent: {decision_msg.get('agent', 'Unknown')}")
-            print(f"    注意: 系统不会自动使用默认交易对，请确保决策中包含有效的symbol字段")
-            return
-        
-        # 验证和调整仓位大小（如果有信心度信息）
-        if "json_data" in parsed:
-            json_data = parsed.get("json_data", {})
-            confidence = json_data.get("confidence")
-            
-            # 计算交易金额
-            if price:
-                trade_amount = quantity * price
-            else:
-                # 尝试从market_snapshot获取价格
-                market_snapshot = decision_msg.get("market_snapshot")
-                if market_snapshot and market_snapshot.get("ticker"):
-                    current_price = market_snapshot["ticker"].get("price")
-                    if current_price:
-                        trade_amount = quantity * current_price
-                    else:
-                        trade_amount = None
-                else:
-                    trade_amount = None
-            
-            # 如果有交易金额和信心度，进行仓位验证和调整
-            if trade_amount and confidence:
-                adjusted_trade_amount = self._validate_and_adjust_position_size(
-                    trade_amount=trade_amount,
-                    confidence=confidence,
-                    allocated_capital=decision_msg.get("allocated_capital")
-                )
-                if adjusted_trade_amount != trade_amount:
-                    print(f"[Executor] ⚠️ 仓位大小已调整: {trade_amount:.2f} → {adjusted_trade_amount:.2f} USD")
-                    # 重新计算quantity
-                    if price:
-                        quantity = adjusted_trade_amount / price
-                    elif market_snapshot and market_snapshot.get("ticker"):
-                        current_price = market_snapshot["ticker"].get("price")
-                        if current_price:
-                            quantity = adjusted_trade_amount / current_price
+        # 1) 信心度阈值检查（默认60%）
+        confidence_pct = None
+        if isinstance(json_data, dict):
+            try:
+                confidence_pct = float(json_data.get("confidence"))
+            except (TypeError, ValueError):
+                confidence_pct = None
+        if confidence_pct is not None:
+            if confidence_pct < self.conf_threshold_pct:
+                print(f"[Executor] ⚠️ 低于信心阈值: {confidence_pct:.1f}% < {self.conf_threshold_pct:.1f}% ，跳过执行")
+                return
         
         # 记录解析结果
         order_type = "LIMIT" if price else "MARKET"
@@ -244,6 +332,32 @@ class TradeExecutor(threading.Thread):
                 print(f"[Executor] 限价: {price}")
             print(f"[Executor] ========================================")
             
+            # 记录本次交易的USD规模（用于动态冷却）；优先使用JSON的position_size_usd，其次用价格估算
+            est_order_usd = None
+            if isinstance(json_data, dict) and "position_size_usd" in json_data:
+                try:
+                    est_order_usd = float(json_data["position_size_usd"])
+                except (TypeError, ValueError):
+                    est_order_usd = None
+            if est_order_usd is None:
+                # 用price估算；若为市价单没有price，可后续由成交回报再完善，这里先用None
+                if price:
+                    try:
+                        est_order_usd = float(price) * float(quantity)
+                    except Exception:
+                        est_order_usd = None
+            if est_order_usd is not None:
+                self._last_order_usd = est_order_usd
+                # 打印将应用的动态冷却建议范围
+                if est_order_usd <= self.small_trade_usd:
+                    print(f"[Executor] 冷却建议: 小额交易，{self.cooldown_small_min}-{self.cooldown_small_max}s")
+                elif est_order_usd >= self.large_trade_usd:
+                    print(f"[Executor] 冷却建议: 大额交易，{self.cooldown_large_min}-{self.cooldown_large_max}s")
+                else:
+                    print(f"[Executor] 冷却建议: 中额交易，~{self.cooldown_mid}s")
+            else:
+                self._last_order_usd = None
+
             if self.dry_run:
                 # 测试模式：只打印参数，不真正下单
                 print(f"[Executor] [DRY RUN] 模拟下单（不会真正执行）")
@@ -268,6 +382,10 @@ class TradeExecutor(threading.Thread):
                 print(f"[Executor] ========================================")
                 print(f"[Executor] API响应: {resp}")
                 print(f"[Executor] ========================================")
+                # 更新下单时间戳（用于动态冷却）
+                self._last_order_ts = now
+                # 记录费用参数（供日志审计）
+                print(f"[Executor] 成本提示: 费率≈{self.fee_rate*100:.2f}% ，建议最小盈利阈值≈费率x{self.min_profit_factor} ≈ {(self.fee_rate*self.min_profit_factor)*100:.2f}%")
                 
                 # 修复响应格式检查 - 适配Roostoo API的实际响应格式
                 if isinstance(resp, dict):
@@ -366,15 +484,7 @@ class TradeExecutor(threading.Thread):
             # 提取交易参数
             symbol = data.get("symbol", "").upper()
             # 转换symbol格式：BTCUSDT -> BTC/USD
-            # 如果没有symbol，说明决策不完整，返回None（保守处理）
-            if not symbol:
-                print(f"[Executor] ⚠️ 决策中缺少symbol字段，无法确定交易对，拒绝执行（保守处理）")
-                return None
-            pair = self._convert_symbol_to_pair(symbol)
-            # 如果转换失败（返回None），说明symbol格式有问题
-            if not pair:
-                print(f"[Executor] ⚠️ 无法从symbol '{symbol}' 确定交易对，拒绝执行（保守处理）")
-                return None
+            pair = self._convert_symbol_to_pair(symbol) if symbol else self.default_pair
             
             # 优先使用quantity字段，如果没有则从position_size_usd计算
             quantity = data.get("quantity")
@@ -475,7 +585,7 @@ class TradeExecutor(threading.Thread):
         quantity = 0.01  # 默认值
         qty_patterns = [
             r'\b(?:buy|sell|purchase)\s+(\d+\.?\d*)',  # "buy 0.01"
-            r'\b(\d+\.?\d*)\s+([a-z]{2,10})\b',  # "0.01 BTC" 或 "0.01 ETH" 等（支持所有币种）
+            r'\b(\d+\.?\d*)\s+(?:btc|eth|sol|bnb|doge)',  # "0.01 BTC"
             r'quantity[:\s]+(\d+\.?\d*)',  # "quantity: 0.01"
             r'amount[:\s]+(\d+\.?\d*)',  # "amount: 0.01"
         ]
@@ -506,142 +616,24 @@ class TradeExecutor(threading.Thread):
                 except ValueError:
                     continue
         
-        # 交易对识别（如果无法识别，返回None，不使用default_pair）
-        pair = None
-        for sym in ["btc", "eth", "sol", "bnb", "doge", "ada", "dot", "link", "matic", "avax", "xrp", "ltc", "bch", "xlm", "atom", "algo", "near", "ftm", "sushi", "uni"]:
+        # 交易对识别
+        pair = self.default_pair
+        for sym in ["btc", "eth", "sol", "bnb", "doge"]:
             if re.search(rf'\b{sym}\b', text_lower):
                 pair = f"{sym.upper()}/USD"
                 break
         
-        # 如果无法识别交易对，返回None（保守处理，不使用default_pair）
-        if not pair:
-            print(f"[Executor] ⚠️ 自然语言决策中无法识别交易对，拒绝执行（保守处理）")
-            return None
-        
         return {"side": side, "quantity": quantity, "price": price, "pair": pair}
     
-    def _convert_symbol_to_pair(self, symbol: str) -> Optional[str]:
+    def _convert_symbol_to_pair(self, symbol: str) -> str:
         """
         转换symbol格式：BTCUSDT -> BTC/USD, BTC/USDT -> BTC/USD
-        
-        Returns:
-            转换后的交易对，如果无法转换则返回None（不使用default_pair，更保守）
         """
-        if not symbol:
-            return None
-        
         # 移除USDT/USD后缀
-        base_symbol = symbol.replace("USDT", "").replace("USD", "").replace("/", "").strip()
-        
-        # 如果移除后缀后为空，说明格式有问题
-        if not base_symbol:
-            return None
+        symbol = symbol.replace("USDT", "").replace("USD", "").replace("/", "")
         
         # 添加/USD后缀
-        return f"{base_symbol}/USD"
-    
-    def _validate_and_adjust_position_size(
-        self,
-        trade_amount: float,
-        confidence: Optional[int] = None,
-        allocated_capital: Optional[float] = None,
-        risk_level: str = "moderate"
-    ) -> float:
-        """
-        验证和调整仓位大小，根据风险等级、信心度和可用资金
-        
-        Args:
-            trade_amount: 原始交易金额（USD）
-            confidence: 信心度（0-100）
-            allocated_capital: 分配的资金额度（如果提供）
-            risk_level: 风险等级（conservative/moderate/aggressive）
-            
-        Returns:
-            调整后的交易金额（USD）
-        """
-        from config.config import (
-            BASE_POSITION_SIZE_RATIO_MODERATE,
-            MAX_POSITION_SIZE_RATIO_MODERATE,
-            MIN_POSITION_SIZE_USD,
-            ABSOLUTE_MAX_POSITION_SIZE_RATIO,
-            ABSOLUTE_MAX_POSITION_SIZE_USD,
-            CONFIDENCE_THRESHOLD_MODERATE,
-            CONFIDENCE_POSITION_MULTIPLIER_MODERATE
-        )
-        
-        # 如果没有分配资金，使用默认值
-        if allocated_capital is None or allocated_capital <= 0:
-            # 使用默认的moderate参数
-            base_ratio = BASE_POSITION_SIZE_RATIO_MODERATE
-            max_ratio = MAX_POSITION_SIZE_RATIO_MODERATE
-            confidence_threshold = CONFIDENCE_THRESHOLD_MODERATE
-            confidence_multiplier = CONFIDENCE_POSITION_MULTIPLIER_MODERATE
-            available_capital = 10000.0  # 默认假设
-        else:
-            # 使用分配的资金
-            from config.config import (
-                BASE_POSITION_SIZE_RATIO_CONSERVATIVE,
-                BASE_POSITION_SIZE_RATIO_AGGRESSIVE,
-                MAX_POSITION_SIZE_RATIO_CONSERVATIVE,
-                MAX_POSITION_SIZE_RATIO_AGGRESSIVE,
-                CONFIDENCE_THRESHOLD_CONSERVATIVE,
-                CONFIDENCE_THRESHOLD_AGGRESSIVE,
-                CONFIDENCE_POSITION_MULTIPLIER_CONSERVATIVE,
-                CONFIDENCE_POSITION_MULTIPLIER_AGGRESSIVE,
-                ABSOLUTE_MAX_POSITION_SIZE_RATIO,
-                ABSOLUTE_MAX_POSITION_SIZE_USD
-            )
-            
-            if risk_level == "conservative":
-                base_ratio = BASE_POSITION_SIZE_RATIO_CONSERVATIVE
-                max_ratio = MAX_POSITION_SIZE_RATIO_CONSERVATIVE
-                confidence_threshold = CONFIDENCE_THRESHOLD_CONSERVATIVE
-                confidence_multiplier = CONFIDENCE_POSITION_MULTIPLIER_CONSERVATIVE
-            elif risk_level == "aggressive":
-                base_ratio = BASE_POSITION_SIZE_RATIO_AGGRESSIVE
-                max_ratio = MAX_POSITION_SIZE_RATIO_AGGRESSIVE
-                confidence_threshold = CONFIDENCE_THRESHOLD_AGGRESSIVE
-                confidence_multiplier = CONFIDENCE_POSITION_MULTIPLIER_AGGRESSIVE
-            else:  # moderate
-                base_ratio = BASE_POSITION_SIZE_RATIO_MODERATE
-                max_ratio = MAX_POSITION_SIZE_RATIO_MODERATE
-                confidence_threshold = CONFIDENCE_THRESHOLD_MODERATE
-                confidence_multiplier = CONFIDENCE_POSITION_MULTIPLIER_MODERATE
-            
-            available_capital = allocated_capital
-        
-        # 计算基础仓位和最大仓位
-        base_position = available_capital * base_ratio
-        max_position = available_capital * max_ratio
-        
-        # 根据信心度调整仓位
-        if confidence is not None and confidence > 0:
-            # 计算信心度调整系数
-            confidence_diff = confidence - confidence_threshold
-            confidence_adjustment = 1.0 + (confidence_diff / 100.0) * confidence_multiplier
-            # 限制调整范围在0.5到1.5之间
-            confidence_adjustment = max(0.5, min(1.5, confidence_adjustment))
-            adjusted_base = base_position * confidence_adjustment
-        else:
-            adjusted_base = base_position
-        
-        # 确定目标仓位（在基础仓位和最大仓位之间）
-        target_position = min(max(adjusted_base, base_position), max_position)
-        
-        # 调整交易金额
-        adjusted_amount = min(trade_amount, target_position)
-        
-        # 应用绝对上限（无论信心度多高，都不超过此限制）
-        absolute_max_by_ratio = available_capital * ABSOLUTE_MAX_POSITION_SIZE_RATIO
-        absolute_max = min(absolute_max_by_ratio, ABSOLUTE_MAX_POSITION_SIZE_USD)
-        adjusted_amount = min(adjusted_amount, absolute_max)
-        
-        # 确保不低于最小仓位
-        adjusted_amount = max(adjusted_amount, MIN_POSITION_SIZE_USD)
-        
-        # 确保不超过可用资金（如果有分配资金）
-        if allocated_capital and allocated_capital > 0:
-            adjusted_amount = min(adjusted_amount, allocated_capital * 0.95)  # 保留5%缓冲
-        
-        return adjusted_amount
+        if symbol:
+            return f"{symbol}/USD"
+        return self.default_pair
 
