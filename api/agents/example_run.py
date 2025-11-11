@@ -6,19 +6,6 @@ from .executor import TradeExecutor
 from api.roostoo_client import RoostooClient
 from config.config import DEFAULT_REQUEST_TIMEOUT_SECONDS, TRADE_INTERVAL_SECONDS
 
-#测试
-import os
-import time
-from typing import Dict
-#测试
-if os.getenv("LLM_PROVIDER") == "minimax":
-    from .minimax_agent_fixed import MiniMaxAgentManager as AgentManager
-else:
-    from .manager import AgentManager
-
-from .executor import TradeExecutor
-from api.roostoo_client import RoostooClient
-
 
 def main():
     mgr = AgentManager()
