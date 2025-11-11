@@ -15,6 +15,13 @@ from typing import Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 load_dotenv()
 
+# 导入频率限制器
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+from utils.rate_limiter import API_RATE_LIMITER
+
 API_KEY = os.getenv("ROOSTOO_API_KEY")
 SECRET_KEY = os.getenv("ROOSTOO_SECRET_KEY")
 
@@ -100,6 +107,7 @@ class RoostooClient:
     def _request(self, method: str, path: str, timeout: Optional[float] = None, max_retries: int = 3, retry_delay: float = 1.0, **kwargs):
         """
         通用的请求发送方法，包含统一的错误处理和重试机制。
+        包含API调用频率限制（每分钟最多5次）。
 
         Args:
             method (str): HTTP方法 (GET, POST)。
@@ -112,6 +120,16 @@ class RoostooClient:
         Returns:
             Dict: API返回的JSON数据。
         """
+        # API调用频率限制：每分钟最多5次
+        if not API_RATE_LIMITER.can_call():
+            wait_time = API_RATE_LIMITER.wait_time()
+            if wait_time > 0:
+                print(f"[RoostooClient] ⚠️ API调用频率限制: 需要等待 {wait_time:.1f} 秒")
+                time.sleep(wait_time)
+        
+        # 记录API调用
+        API_RATE_LIMITER.record_call()
+        
         url = f"{self.base_url}{path}"
         
         # 使用配置的超时时间，如果未指定则使用30秒（比原来的10秒更长）
