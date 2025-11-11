@@ -4,7 +4,7 @@ import time
 import hmac
 import hashlib
 import requests
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -69,7 +69,7 @@ class RoostooClient:
         # 4. 使用HMAC-SHA256算法生成签名（与官方示例完全一致）
         signature = hmac.new(
             self.secret_key.encode('utf-8'),
-            param_string.encode('utf-8'),
+            query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
 
@@ -171,7 +171,7 @@ class RoostooClient:
 
     def get_ticker(self, pair: str = None) -> Dict:
         """[RCL_TSCheck] 获取市场行情"""
-        timestamp = self._get_synchronized_timestamp()
+        timestamp = self._get_timestamp()
         params = {'timestamp': timestamp}
         if pair:
             params['pair'] = pair
