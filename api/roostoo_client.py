@@ -6,13 +6,8 @@ import hmac
 import hashlib
 import requests
 from typing import Dict, Any, Optional, Tuple
-
-# 假设您的项目结构中有一个 config/credentials.py 文件来加载环境变量
-# 如果没有，您可以直接在这里使用 os.getenv
-# from config.credentials import API_KEY, SECRET_KEY
-
-# 为了让此文件自包含，我们直接在这里加载环境变量
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # 导入频率限制器
@@ -25,7 +20,6 @@ from utils.rate_limiter import API_RATE_LIMITER
 API_KEY = os.getenv("ROOSTOO_API_KEY")
 SECRET_KEY = os.getenv("ROOSTOO_SECRET_KEY")
 
-# 从环境变量读取API URL（必须配置）
 ROOSTOO_API_URL = os.getenv("ROOSTOO_API_URL")
 if not ROOSTOO_API_URL:
     raise ValueError(
@@ -36,27 +30,17 @@ BASE_URL = ROOSTOO_API_URL
 
 class RoostooClient:
     """
-    Roostoo API的Python客户端，封装了所有端点的请求和认证逻辑。
+    Roostoo API的Python客户端，完全按照官方文档实现认证逻辑。
     """
     def __init__(self, api_key: str = API_KEY, secret_key: str = SECRET_KEY, base_url: str = None):
-        """
-        初始化客户端。
-
-        Args:
-            api_key (str): 您的Roostoo API Key。
-            secret_key (str): 您的Roostoo Secret Key。
-            base_url (str, optional): API基础URL。如果为None，使用环境变量ROOSTOO_API_URL或默认值。
-        """
         if not api_key or not secret_key:
             raise ValueError("API Key和Secret Key不能为空。请检查您的.env文件或初始化参数。")
         
-        # 支持通过参数或环境变量配置base_url
         self.base_url = base_url or BASE_URL
         self.api_key = api_key
         self.secret_key = secret_key
         self.session = requests.Session()
         
-        # 打印当前使用的API URL（用于确认）
         print(f"[RoostooClient] ✓ 使用API: {self.base_url}")
 
     def _get_timestamp(self) -> int:
@@ -132,84 +116,49 @@ class RoostooClient:
         
         url = f"{self.base_url}{path}"
         
-        # 使用配置的超时时间，如果未指定则使用30秒（比原来的10秒更长）
         if timeout is None:
             timeout = 30.0
         
-        # 重试机制
+        # 打印请求详情用于调试
+        print(f"[RoostooClient] 请求详情:")
+        print(f"  方法: {method}")
+        print(f"  URL: {url}")
+        if 'headers' in kwargs:
+            print(f"  请求头: {kwargs['headers']}")
+        if 'params' in kwargs:
+            print(f"  查询参数: {kwargs['params']}")
+        if 'data' in kwargs:
+            print(f"  POST数据: {kwargs['data']}")
+        
         last_exception = None
         for attempt in range(max_retries):
             try:
                 response = self.session.request(method, url, **kwargs, timeout=timeout)
-                response.raise_for_status()  # 如果状态码是4xx或5xx，则抛出异常
+                response.raise_for_status()
+                print(f"[RoostooClient] ✓ 请求成功: {response.status_code}")
                 return response.json()
-            except requests.exceptions.Timeout as e:
-                last_exception = e
-                if attempt < max_retries - 1:
-                    wait_time = retry_delay * (attempt + 1)  # 指数退避
-                    print(f"[RoostooClient] ⚠️ 请求超时 (尝试 {attempt + 1}/{max_retries})，{wait_time:.1f}秒后重试...")
-                    time.sleep(wait_time)
-                else:
-                    print(f"[RoostooClient] ✗ 请求超时，已重试 {max_retries} 次")
-                    print(f"    URL: {url}")
-                    print(f"    超时时间: {timeout}秒")
-                    print(f"    建议: 检查网络连接或增加超时时间")
-                    raise requests.exceptions.RequestException(
-                        f"请求超时 (已重试 {max_retries} 次): {url}\n"
-                        f"超时时间: {timeout}秒\n"
-                        f"可能的原因:\n"
-                        f"  1. 网络连接慢或不稳定\n"
-                        f"  2. API服务器响应慢\n"
-                        f"  3. 防火墙或代理设置问题\n"
-                        f"  4. API服务器暂时不可用\n"
-                        f"建议:\n"
-                        f"  1. 检查网络连接\n"
-                        f"  2. 检查防火墙/代理设置\n"
-                        f"  3. 尝试增加超时时间 (当前: {timeout}秒)\n"
-                        f"  4. 检查API服务器状态"
-                    ) from e
-            except requests.exceptions.ConnectionError as e:
-                last_exception = e
+            except requests.exceptions.HTTPError as e:
+                print(f"[RoostooClient] ✗ HTTP错误: {e.response.status_code} - {e.response.reason}")
+                print(f"    响应内容: {e.response.text}")
+                # 对于认证错误，直接抛出，不需要重试
+                if e.response.status_code in [401, 403, 451]:
+                    raise
+                # 其他HTTP错误可以重试
                 if attempt < max_retries - 1:
                     wait_time = retry_delay * (attempt + 1)
-                    print(f"[RoostooClient] ⚠️ 连接错误 (尝试 {attempt + 1}/{max_retries})，{wait_time:.1f}秒后重试...")
+                    print(f"[RoostooClient] ⚠️ HTTP错误 (尝试 {attempt + 1}/{max_retries})，{wait_time:.1f}秒后重试...")
                     time.sleep(wait_time)
                 else:
-                    print(f"[RoostooClient] ✗ 连接错误，已重试 {max_retries} 次")
-                    print(f"    URL: {url}")
-                    raise requests.exceptions.RequestException(
-                        f"连接错误 (已重试 {max_retries} 次): {url}\n"
-                        f"可能的原因:\n"
-                        f"  1. 网络连接问题\n"
-                        f"  2. DNS解析失败\n"
-                        f"  3. 防火墙阻止连接\n"
-                        f"  4. API服务器不可达\n"
-                        f"建议:\n"
-                        f"  1. 检查网络连接: ping api.roostoo.com\n"
-                        f"  2. 检查DNS设置\n"
-                        f"  3. 检查防火墙/代理设置\n"
-                        f"  4. 尝试使用VPN或更换网络"
-                    ) from e
-            except requests.exceptions.HTTPError as e:
-                # HTTP错误（4xx, 5xx）通常不需要重试，直接抛出
-                print(f"[RoostooClient] ✗ HTTP错误: {e.response.status_code} - {e.response.reason}")
-                print(f"    URL: {e.response.url}")
-                print(f"    响应内容: {e.response.text[:500]}")
-                raise
-            except requests.exceptions.RequestException as e:
+                    raise
+            except Exception as e:
                 last_exception = e
                 if attempt < max_retries - 1:
                     wait_time = retry_delay * (attempt + 1)
                     print(f"[RoostooClient] ⚠️ 请求异常 (尝试 {attempt + 1}/{max_retries})，{wait_time:.1f}秒后重试...")
-                    print(f"    错误: {str(e)}")
                     time.sleep(wait_time)
                 else:
-                    print(f"[RoostooClient] ✗ 请求异常，已重试 {max_retries} 次")
-                    print(f"    URL: {url}")
-                    print(f"    错误: {str(e)}")
                     raise
         
-        # 如果所有重试都失败，抛出最后一个异常
         if last_exception:
             raise last_exception
 
@@ -225,7 +174,9 @@ class RoostooClient:
 
     def get_ticker(self, pair: Optional[str] = None, timeout: Optional[float] = None) -> Dict:
         """[RCL_TSCheck] 获取市场Ticker信息"""
-        params = {'timestamp': self._get_timestamp()}
+        # RCL_TSCheck只需要timestamp参数，不需要签名
+        timestamp = self._get_timestamp()
+        params = {'timestamp': timestamp}
         if pair:
             params['pair'] = pair
         return self._request('GET', '/v3/ticker', params=params, timeout=timeout)
@@ -261,12 +212,10 @@ class RoostooClient:
     def place_order(self, pair: str, side: str, quantity: float, price: Optional[float] = None) -> Dict:
         """
         [RCL_TopLevelCheck] 下新订单（市价或限价）
-        
-        根据官方文档，参数名应该是 'type' 而不是 'order_type'
         """
         payload = {
             'pair': pair,
-            'side': side.upper(), # 'BUY' or 'SELL'
+            'side': side.upper(),
             'quantity': str(quantity),
         }
         if price is not None:
