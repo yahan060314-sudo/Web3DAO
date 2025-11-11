@@ -29,8 +29,12 @@ from typing import Dict, Any, Optional
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from dotenv import load_dotenv
-load_dotenv()
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except ImportError:
+    # dotenv未安装时跳过（不影响运行，但环境变量需要手动设置）
+    pass
 
 from api.agents.manager import AgentManager
 from api.agents.executor import TradeExecutor
@@ -301,25 +305,60 @@ def test_api_connection() -> bool:
         return False
 
 
-def get_initial_capital_from_api() -> float:
-    """从API获取初始本金"""
+def get_current_capital_from_api() -> float:
+    """
+    从API获取当前实际余额（USD总余额）
+    
+    注意：这是当前实际余额，不是比赛开始时的初始本金。
+    用于在比赛进行中重新启动bot时，使用当前余额进行资金分配。
+    """
     try:
         client = RoostooClient()
-        exchange_info = client.get_exchange_info()
+        balance = client.get_balance()
         
-        if isinstance(exchange_info, dict) and "InitialWallet" in exchange_info:
-            initial_wallet = exchange_info["InitialWallet"]
-            if isinstance(initial_wallet, dict) and "USD" in initial_wallet:
-                initial_capital = float(initial_wallet["USD"])
-                logger.info(f"✓ 从API获取初始本金: {initial_capital:.2f} USD")
-                return initial_capital
+        # 使用DataFormatter格式化余额数据
+        from api.agents.data_formatter import DataFormatter
+        formatter = DataFormatter()
+        formatted_balance = formatter.format_balance(balance)
         
-        logger.warning("⚠️ API响应格式不符合预期，使用默认值50000")
+        # 提取USD总余额
+        if "currencies" in formatted_balance:
+            currencies = formatted_balance["currencies"]
+            if "USD" in currencies:
+                usd_total = currencies["USD"].get("total", 0)
+                if usd_total > 0:
+                    logger.info(f"✓ 从API获取当前余额: {usd_total:.2f} USD")
+                    return float(usd_total)
+        
+        # 如果格式化后的数据中没有USD，尝试从原始数据提取
+        if "total_balance" in formatted_balance:
+            total_balance = formatted_balance["total_balance"]
+            if total_balance > 0:
+                logger.info(f"✓ 从API获取当前总余额: {total_balance:.2f} USD")
+                return float(total_balance)
+        
+        # 尝试从原始响应中提取
+        data = balance.get("data", balance)
+        spot_wallet = data.get("SpotWallet", {})
+        if spot_wallet and "USD" in spot_wallet:
+            usd_info = spot_wallet["USD"]
+            if isinstance(usd_info, dict):
+                free = float(usd_info.get("Free", 0))
+                locked = float(usd_info.get("Lock", 0))
+                total = free + locked
+                if total > 0:
+                    logger.info(f"✓ 从API获取当前USD余额: {total:.2f} USD (可用: {free:.2f}, 锁定: {locked:.2f})")
+                    return total
+        
+        logger.warning("⚠️ API响应格式不符合预期，无法提取USD余额")
+        logger.warning("⚠️ 将使用默认值50000.0 USD（如果这是首次运行，这是正常的）")
         return 50000.0
         
     except Exception as e:
-        logger.warning(f"⚠️ 从API获取初始本金失败: {e}")
-        logger.info("使用默认值: 50000.0 USD")
+        logger.warning(f"⚠️ 从API获取当前余额失败: {e}")
+        logger.warning("⚠️ 将使用默认值50000.0 USD（如果这是首次运行，这是正常的）")
+        import traceback
+        traceback.print_exc()
         return 50000.0
 
 
@@ -379,8 +418,11 @@ def main():
     logger.info("初始化系统")
     logger.info("=" * 80)
     
-    initial_capital = get_initial_capital_from_api()
-    capital_manager = CapitalManager(initial_capital=initial_capital)
+    # 从API获取当前实际余额（不是初始本金，而是当前余额）
+    current_capital = get_current_capital_from_api()
+    logger.info(f"当前账户余额: {current_capital:.2f} USD")
+    logger.info(f"将以此余额为基础，均分给两个Agent")
+    capital_manager = CapitalManager(initial_capital=current_capital)
     
     # 4. 创建Agent管理器
     logger.info("\n[1] 创建Agent管理器...")
@@ -396,8 +438,8 @@ def main():
     allocations = capital_manager.allocate_equal(agent_names)
     capital_manager.print_summary()
     
-    agent_1_capital = allocations.get("agent_1", initial_capital / 2)
-    agent_2_capital = allocations.get("agent_2", initial_capital / 2)
+    agent_1_capital = allocations.get("agent_1", current_capital / 2)
+    agent_2_capital = allocations.get("agent_2", current_capital / 2)
     
     # 7. 创建两个Agent的系统提示词
     logger.info("\n[4] 创建AI Agents...")
