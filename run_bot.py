@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from api.agents.manager import AgentManager
-from api.agents.enhanced_executor import EnhancedTradeExecutor
+from api.agents.executor import TradeExecutor
 from api.agents.market_collector import MarketDataCollector
 from api.agents.prompt_manager import PromptManager
 from api.agents.capital_manager import CapitalManager
@@ -323,7 +323,7 @@ def main():
     )
     collector.start()
     
-    # 11. 创建交易执行器（真实交易模式，启用资本管理器）
+    # 11. 创建交易执行器（真实交易模式）
     logger.info("[9] 启动交易执行器...")
     dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
     
@@ -332,14 +332,11 @@ def main():
     else:
         logger.info("✓ 真实交易模式已启用 - 将真正执行下单操作")
     
-    executor = EnhancedTradeExecutor(
+    executor = TradeExecutor(
         bus=mgr.bus,
         decision_topic=mgr.decision_topic,
         default_pair="BTC/USD",
-        dry_run=dry_run,
-        enable_decision_manager=True,
-        enable_multi_ai_consensus=False,  # 两个Agent独立操作，不使用共识
-        capital_manager=capital_manager  # 传入资本管理器
+        dry_run=dry_run
     )
     executor.start()
     
