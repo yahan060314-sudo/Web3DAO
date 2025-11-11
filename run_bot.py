@@ -344,15 +344,30 @@ def main():
     logger.info("\n[10] 等待初始市场数据...")
     time.sleep(8)
     
-    # 13. 发送初始交易提示
-    logger.info("[11] 发送初始交易提示...")
+    # 13. 发送初始交易提示（强调需要做出决策）
+    logger.info("[11] 发送初始交易提示（要求做出决策）...")
     market_snapshot = collector.get_latest_snapshot()
     if market_snapshot:
-        trading_prompt = prompt_mgr.create_trading_prompt(
-            market_snapshot=market_snapshot,
-            additional_context="This is the initial trading decision request. Analyze the market and provide your recommendation."
-        )
-        mgr.broadcast_prompt(role="user", content=trading_prompt)
+        # 创建强调需要决策的提示
+        market_text = prompt_mgr.formatter.format_for_llm(market_snapshot)
+        initial_prompt = f"""Analyze the current market situation and make a trading decision NOW.
+
+{market_text}
+
+IMPORTANT: This is the initial decision request. You MUST make a trading decision based on the available market data:
+- If you see a reasonable opportunity (70%+ confidence), choose "open_long" or "close_long"
+- Only choose "wait" or "hold" if market conditions are truly unclear or unfavorable
+- Don't be overly cautious - make a decision based on the current market data
+
+Based on the above information:
+1. What is your analysis of the current market?
+2. What trading action do you recommend? (MUST be a concrete decision, not always wait)
+3. What is your reasoning?
+
+Provide your decision in JSON format as specified in your system prompt."""
+        
+        mgr.broadcast_prompt(role="user", content=initial_prompt)
+        logger.info("✓ 初始交易提示已发送，要求做出决策")
     
     # 14. 主循环
     logger.info("\n" + "=" * 80)
@@ -385,16 +400,22 @@ def main():
             if current_time - last_prompt_time >= prompt_interval:
                 market_snapshot = collector.get_latest_snapshot()
                 if market_snapshot:
+                    # 第一次提示要求必须做出决策，后续提示正常
+                    is_first_prompt = (elapsed < 60)  # 第一分钟内
                     trading_prompt = prompt_mgr.create_trading_prompt(
                         market_snapshot=market_snapshot,
-                        additional_context="Periodic market analysis request."
+                        additional_context="Periodic market analysis request.",
+                        require_decision=is_first_prompt
                     )
                     mgr.broadcast_prompt(role="user", content=trading_prompt)
                     last_prompt_time = current_time
                     
                     elapsed_min = int(elapsed / 60)
                     elapsed_sec = int(elapsed % 60)
-                    logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] 发送交易提示 (运行时长: {elapsed_min}分{elapsed_sec}秒)")
+                    if is_first_prompt:
+                        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] 发送交易提示（要求做出决策） (运行时长: {elapsed_min}分{elapsed_sec}秒)")
+                    else:
+                        logger.info(f"[{datetime.now().strftime('%H:%M:%S')}] 发送交易提示 (运行时长: {elapsed_min}分{elapsed_sec}秒)")
             
             # 每60秒显示一次统计
             if current_time - last_stats_time >= stats_interval:

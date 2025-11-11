@@ -159,7 +159,8 @@ Example valid outputs:
     def create_trading_prompt(
         self,
         market_snapshot: Dict[str, Any],
-        additional_context: Optional[str] = None
+        additional_context: Optional[str] = None,
+        require_decision: bool = False
     ) -> str:
         """
         创建交易决策提示词（包含当前市场数据）
@@ -167,6 +168,7 @@ Example valid outputs:
         Args:
             market_snapshot: 市场快照数据
             additional_context: 额外的上下文信息（可选）
+            require_decision: 是否要求必须做出决策（而不是wait/hold）
             
         Returns:
             格式化的交易提示词
@@ -182,6 +184,14 @@ Example valid outputs:
         
         if additional_context:
             prompt += f"Additional Context: {additional_context}\n\n"
+        
+        if require_decision:
+            prompt += """IMPORTANT: You MUST make a trading decision based on the available market data:
+- If you see a reasonable opportunity (70%+ confidence), choose "open_long" or "close_long"
+- Only choose "wait" or "hold" if market conditions are truly unclear or unfavorable
+- Don't be overly cautious - make a decision based on the current market data
+
+"""
         
         prompt += """Based on the above information:
 1. What is your analysis of the current market?
