@@ -68,39 +68,13 @@ def _to_pair_with_slash(symbol: str) -> str:
 def load_all_tradeable_usd_pairs() -> list:
     """
     从 exchangeInfo 动态加载可交易的 USD 计价交易对，统一为 'BASE/USD'。
-    支持多种API响应格式，解析失败时回退为 ['BTC/USD']。
+    解析失败时回退为 ['BTC/USD']。
     """
     try:
         client = RoostooClient()
-        logger.info(f"[LoadPairs] Using API: {client.base_url}")
         info = client.get_exchange_info()
-        
         candidates = []
         if isinstance(info, dict):
-            # 方法1: 检查 data.TradePairs (Roostoo API的标准格式)
-            data = info.get("data", info)
-            if isinstance(data, dict) and "TradePairs" in data:
-                trade_pairs = data["TradePairs"]
-                if isinstance(trade_pairs, dict):
-                    # TradePairs 是字典，key就是交易对名称
-                    for pair_key in trade_pairs.keys():
-                        candidates.append(_to_pair_with_slash(pair_key))
-                elif isinstance(trade_pairs, list):
-                    # TradePairs 是列表
-                    for item in trade_pairs:
-                        if isinstance(item, str):
-                            candidates.append(_to_pair_with_slash(item))
-                        elif isinstance(item, dict):
-                            pair_val = item.get("Pair") or item.get("pair") or item.get("Symbol") or item.get("symbol")
-                            if pair_val:
-                                candidates.append(_to_pair_with_slash(pair_val))
-            
-            # 方法2: 检查顶层的 TradePairs
-            if "TradePairs" in info and isinstance(info["TradePairs"], dict):
-                for pair_key in info["TradePairs"].keys():
-                    candidates.append(_to_pair_with_slash(pair_key))
-            
-            # 方法3: 检查 Symbols (某些API格式)
             if "Symbols" in info and isinstance(info["Symbols"], list):
                 for item in info["Symbols"]:
                     pair_val = None
@@ -110,9 +84,7 @@ def load_all_tradeable_usd_pairs() -> list:
                         pair_val = item
                     if pair_val:
                         candidates.append(_to_pair_with_slash(pair_val))
-            
-            # 方法4: 检查 symbols (小写)
-            if "symbols" in info and isinstance(info["symbols"], list):
+            elif "symbols" in info and isinstance(info["symbols"], list):
                 for item in info["symbols"]:
                     pair_val = None
                     if isinstance(item, dict):
@@ -121,31 +93,20 @@ def load_all_tradeable_usd_pairs() -> list:
                         pair_val = item
                     if pair_val:
                         candidates.append(_to_pair_with_slash(pair_val))
-            
-            # 方法5: 检查 Pairs
-            if "Pairs" in info and isinstance(info["Pairs"], list):
+            elif "Pairs" in info and isinstance(info["Pairs"], list):
                 for s in info["Pairs"]:
                     candidates.append(_to_pair_with_slash(s))
-        
         # 仅保留 USD 计价，去重且保持顺序
         seen = set()
         usd_pairs = []
         for p in candidates:
-            normalized = _to_pair_with_slash(p)
-            if normalized.endswith("/USD") and normalized not in seen:
-                seen.add(normalized)
-                usd_pairs.append(normalized)
-        
+            if p.endswith("/USD") and p not in seen:
+                seen.add(p)
+                usd_pairs.append(p)
         if not usd_pairs:
-            logger.warning(f"[LoadPairs] ⚠️ 未找到USD交易对，使用默认值 BTC/USD")
-            logger.warning(f"[LoadPairs] Debug: candidates = {candidates[:10]}...")
             usd_pairs = ["BTC/USD"]
-        
         return usd_pairs
-    except Exception as e:
-        logger.warning(f"[LoadPairs] Failed to load exchange info: {e}")
-        import traceback
-        traceback.print_exc()
+    except Exception:
         return ["BTC/USD"]
 
 
@@ -350,31 +311,7 @@ def main():
         logger.error("API连接测试失败，请检查网络和API配置")
         sys.exit(1)
     
-    # 3. 获取所有可用的交易对
-    logger.info("=" * 80)
-    logger.info("获取可用交易对")
-    logger.info("=" * 80)
-    
-    available_pairs = []
-    try:
-        client = RoostooClient()
-        exchange_info = client.get_exchange_info()
-        from api.agents.data_formatter import DataFormatter
-        formatter = DataFormatter()
-        formatted_info = formatter.format_exchange_info(exchange_info)
-        
-        if formatted_info.get("trade_pairs"):
-            available_pairs = formatted_info["trade_pairs"]
-            logger.info(f"✓ 从API获取到 {len(available_pairs)} 个可用交易对")
-            logger.info(f"  交易对列表: {', '.join(available_pairs[:10])}{'...' if len(available_pairs) > 10 else ''}")
-        else:
-            logger.warning("⚠️ 无法从API获取交易对列表，使用默认值 BTC/USD")
-            available_pairs = ["BTC/USD"]
-    except Exception as e:
-        logger.warning(f"⚠️ 获取交易对列表失败: {e}，使用默认值 BTC/USD")
-        available_pairs = ["BTC/USD"]
-    
-    # 4. 获取初始本金并创建资本管理器
+    # 3. 获取初始本金并创建资本管理器
     logger.info("=" * 80)
     logger.info("初始化系统")
     logger.info("=" * 80)
@@ -422,16 +359,17 @@ def main():
     else:
         llm_provider_2 = llm_provider_1  # 如果只有一个LLM，两个Agent使用同一个
     
-    # 创建系统提示词（不指定risk_level，使用默认的moderate策略，适合自动运行）
-    # 注意：risk_level参数不传入，系统会自动使用moderate（中等风险），无需手动设置
+    # 创建系统提示词（使用aggressive策略，确保能做出决策）
     agent_1_prompt = prompt_mgr.get_system_prompt(
         agent_name="Agent1",
-        trading_strategy="Actively seek trading opportunities. Make decisions when you have reasonable confidence. Be proactive in identifying entry and exit points."
+        trading_strategy="Actively seek trading opportunities. Make decisions when you have 60%+ confidence. Be proactive in identifying entry and exit points.",
+        risk_level="aggressive"
     )
     
     agent_2_prompt = prompt_mgr.get_system_prompt(
         agent_name="Agent2",
-        trading_strategy="Actively analyze market conditions and make trading decisions when opportunities arise. Balance risk and reward for sustainable returns."
+        trading_strategy="Actively analyze market conditions and make trading decisions when opportunities arise. Take calculated risks for better returns. 60%+ confidence is sufficient.",
+        risk_level="aggressive"
     )
     
     # 8. 添加Agent
@@ -455,14 +393,22 @@ def main():
     logger.info("\n[7] 启动Agents...")
     mgr.start()
     
-    # 10. 创建市场数据采集器（采集所有可用交易对）
+    # 10. 创建市场数据采集器
     logger.info("[8] 启动市场数据采集器...")
-    logger.info(f"  将采集 {len(available_pairs)} 个交易对的数据")
+    # 支持通过环境变量覆盖交易对列表：TRADE_PAIRS=BTC/USD,ETH/USD,SOL/USD
+    env_pairs = os.getenv("TRADE_PAIRS", "").strip()
+    all_usd_pairs = []
+    if env_pairs:
+        all_usd_pairs = [p.strip().upper() for p in env_pairs.split(",") if p.strip()]
+        logger.info(f"[MarketDataCollector] 使用环境变量 TRADE_PAIRS 覆盖，数量: {len(all_usd_pairs)}")
+    else:
+        all_usd_pairs = load_all_tradeable_usd_pairs()
+        logger.info(f"[MarketDataCollector] 可交易USD交易对数量: {len(all_usd_pairs)}")
     collector = MarketDataCollector(
         bus=mgr.bus,
         market_topic=mgr.market_topic,
-        pairs=available_pairs,  # 使用从API获取的所有交易对
-        collect_interval=12.0,  # 12秒间隔，符合每分钟最多5次API调用的限制
+        pairs=all_usd_pairs,
+        collect_interval=30.0,  # 延长为30秒，进一步降低API调用频率
         collect_balance=True,
         collect_ticker=True
     )
@@ -477,15 +423,10 @@ def main():
     else:
         logger.info("✓ 真实交易模式已启用 - 将真正执行下单操作")
     
-    # 使用第一个可用交易对作为默认值（仅用于fallback，agent应该明确指定交易对）
-    default_pair = available_pairs[0] if available_pairs else "BTC/USD"
-    logger.info(f"  默认交易对（仅用于fallback）: {default_pair}")
-    logger.info(f"  注意: Agent应该从 {len(available_pairs)} 个可用交易对中选择最佳机会")
-    
     executor = TradeExecutor(
         bus=mgr.bus,
         decision_topic=mgr.decision_topic,
-        default_pair=default_pair,  # 仅作为fallback，agent应该明确指定交易对
+        default_pair="BTC/USD",
         dry_run=dry_run
     )
     executor.start()
@@ -494,34 +435,113 @@ def main():
     logger.info("\n[10] 等待初始市场数据...")
     time.sleep(8)
     
-    # 13. 发送初始交易提示（给Agent进行首次决策）
-    logger.info("[11] 发送初始交易提示（供Agent进行首次决策）...")
+    # 13. 手动创建初始买入决策（启动比赛）
+    logger.info("[11] 创建手动初始买入决策（启动比赛）...")
     market_snapshot = collector.get_latest_snapshot()
     if market_snapshot:
-        # 创建正常的交易提示（不强制要求交易）
+        # 获取当前价格
+        current_price = 100000.0  # 默认价格
+        if market_snapshot.get("ticker") and market_snapshot["ticker"].get("price"):
+            current_price = market_snapshot["ticker"]["price"]
+        
+        # 手动设计初始买入决策：小额买入，启动比赛
+        initial_position_size_usd = 500.0  # 小额买入：500 USD
+        initial_quantity = initial_position_size_usd / current_price  # 计算BTC数量
+        initial_quantity = round(initial_quantity, 8)  # 保留8位小数
+        
+        # 创建JSON格式的决策（确保格式与executor期望的一致）
+        import json
+        initial_decision_json = {
+            "action": "open_long",  # 买入动作
+            "symbol": "BTCUSDT",  # 交易对符号
+            "price_ref": current_price,  # 参考价格
+            "position_size_usd": initial_position_size_usd,  # 仓位大小（USD）
+            "quantity": initial_quantity,  # BTC数量（executor会优先使用这个）
+            "confidence": 100,  # 手动决策，100%信心
+            "reasoning": "Manual initial decision: Starting the competition with a small position to activate trading system."
+        }
+        initial_decision_text = json.dumps(initial_decision_json, ensure_ascii=False)
+        
+        # 创建决策消息
+        initial_decision_msg = {
+            "agent": "system_initializer",  # 标记为系统初始化决策
+            "decision": initial_decision_text,
+            "market_snapshot": market_snapshot,
+            "timestamp": time.time(),
+            "json_valid": True,
+            "allocated_capital": initial_capital / 2,  # 使用agent_1的资金额度
+            "llm_provider": "manual"  # 标记为手动决策
+        }
+        
+        # 发布到消息总线
+        mgr.bus.publish(mgr.decision_topic, initial_decision_msg)
+        logger.info("=" * 80)
+        logger.info("✓ 手动初始买入决策已发布")
+        logger.info("=" * 80)
+        logger.info(f"  交易对: BTC/USD")
+        logger.info(f"  方向: BUY (open_long)")
+        logger.info(f"  数量: {initial_quantity:.8f} BTC")
+        logger.info(f"  金额: {initial_position_size_usd:.2f} USD")
+        logger.info(f"  参考价格: {current_price:.2f} USD")
+        logger.info(f"  订单类型: MARKET (市价单)")
+        logger.info("=" * 80)
+        logger.info("等待执行器处理初始决策...")
+        time.sleep(3)  # 等待执行器处理
+    
+    # 14. 发送初始交易提示（给Agent后续决策使用）
+    logger.info("\n[12] 发送初始交易提示（供Agent后续决策使用）...")
+    market_snapshot = collector.get_latest_snapshot()
+    if market_snapshot:
+        # 创建强制要求交易的提示
         market_text = prompt_mgr.formatter.format_for_llm(market_snapshot)
+        current_price = None
+        if market_snapshot.get("ticker") and market_snapshot["ticker"].get("price"):
+            current_price = market_snapshot["ticker"]["price"]
         
-        # 获取可用交易对信息用于提示
-        available_symbols_note = ""
-        if available_pairs:
-            symbols = [pair.replace("/", "").replace("USD", "USDT") for pair in available_pairs[:5]]
-            available_symbols_note = f"\nAvailable trading pairs: {', '.join(symbols)}{'...' if len(available_pairs) > 5 else ''}\nYou should analyze ALL available currencies and choose the best opportunity."
-        
-        initial_prompt = f"""Analyze the current market situation and make a trading decision.
+        initial_prompt = f"""You MUST make a trading decision NOW. This is a MANDATORY initial trade.
 
 Current Market Data:
 {market_text}
-{available_symbols_note}
 
-Based on the above information:
-1. What is your analysis of the current market?
-2. What trading action do you recommend?
-3. What is your reasoning?
+CRITICAL REQUIREMENT - You MUST choose either "open_long" (BUY) or "close_long" (SELL):
+- DO NOT choose "wait" or "hold" for this initial decision
+- Based on the current market data, make a concrete trading decision
+- Confidence threshold is LOWERED to 60% for initial decisions - you don't need perfect certainty
+- If price seems reasonable or even slightly favorable, choose "open_long" to start trading
+- If you have concerns, still make a decision with smaller position size (e.g., 300-500 USD)
+- This is the system's first decision - you MUST take action, not wait
+- Remember: Acting with 60% confidence is better than waiting indefinitely
 
-Provide your decision in the format specified in your system prompt. You can choose to trade if you see a good opportunity, or wait/hold if market conditions are not favorable."""
+RELAXED THRESHOLDS FOR INITIAL DECISION:
+- Confidence: 60%+ is sufficient (not 85%+)
+- Market clarity: Reasonable data is enough (don't wait for perfect signals)
+- Risk: Use smaller position size if uncertain (300-500 USD instead of 1000+)
+
+Required JSON format (choose ONE):
+{{
+  "action": "open_long",
+  "symbol": "BTCUSDT",
+  "price_ref": {current_price if current_price else 100000},
+  "position_size_usd": 500.0,
+  "confidence": 65,
+  "reasoning": "Initial trading decision - market conditions are reasonable enough to start trading"
+}}
+
+OR if you believe market is declining:
+{{
+  "action": "close_long",
+  "symbol": "BTCUSDT",
+  "price_ref": {current_price if current_price else 100000},
+  "position_size_usd": 500.0,
+  "confidence": 65,
+  "reasoning": "Initial trading decision - market conditions suggest selling"
+}}
+
+You MUST output one of these actions. "wait" or "hold" is NOT acceptable for this initial decision.
+Even if you're only 60% confident, you MUST make a decision."""
         
         mgr.broadcast_prompt(role="user", content=initial_prompt)
-        logger.info("✓ 初始交易提示已发送（供Agent进行首次决策）")
+        logger.info("✓ 初始交易提示已发送（供Agent后续决策使用）")
     
     # 15. 主循环
     logger.info("\n" + "=" * 80)
