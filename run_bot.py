@@ -280,13 +280,13 @@ def main():
     # 创建系统提示词
     agent_1_prompt = prompt_mgr.get_system_prompt(
         agent_name="Agent1",
-        trading_strategy="Focus on capital preservation and risk management. Make conservative trading decisions.",
-        risk_level="conservative"
+        trading_strategy="Make trading decisions based on market analysis. Look for reasonable opportunities with proper risk management.",
+        risk_level="moderate"
     )
     
     agent_2_prompt = prompt_mgr.get_system_prompt(
         agent_name="Agent2",
-        trading_strategy="Balance risk and reward. Look for good trading opportunities with moderate risk.",
+        trading_strategy="Actively analyze market conditions and make trading decisions when opportunities arise. Balance risk and reward.",
         risk_level="moderate"
     )
     

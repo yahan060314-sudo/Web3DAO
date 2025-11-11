@@ -99,13 +99,19 @@ Risk Level: {risk_level}
         
         risk_guidelines = {
             "conservative": "Be very cautious. Only trade when there's high confidence. Preserve capital.",
-            "moderate": "Balance risk and reward. Look for good opportunities but don't take excessive risks.",
+            "moderate": "Balance risk and reward. Look for good opportunities but don't take excessive risks. Make decisions when you have reasonable confidence (70%+).",
             "aggressive": "Be more active in trading. Take calculated risks for higher returns."
         }
         
         base_prompt += f"\nRisk Guidelines: {risk_guidelines.get(risk_level, risk_guidelines['moderate'])}\n"
         
         base_prompt += """
+IMPORTANT - Decision Making Philosophy:
+- You should make trading decisions when you have reasonable confidence (70%+ confidence is sufficient)
+- Don't always choose wait/hold - analyze the market and make decisions when opportunities exist
+- Only choose wait/hold when market conditions are truly unclear or unfavorable
+- Be proactive in identifying trading opportunities based on available market data
+
 When making decisions, provide clear reasoning:
 - What market signals you're seeing
 - Why you're making this decision

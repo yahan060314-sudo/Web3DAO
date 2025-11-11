@@ -203,7 +203,7 @@ Based on this information, what trading action do you recommend? Provide your de
 
         # 请求 LLM 得到决策
         try:
-            llm_out = self.llm.chat(messages, temperature=0.3, max_tokens=512)
+            llm_out = self.llm.chat(messages, temperature=0.5, max_tokens=512)
             decision_text = llm_out.get("content") or ""
             
             # 验证JSON格式（如果可能）
