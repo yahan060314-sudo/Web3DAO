@@ -78,8 +78,8 @@ class RoostooClient:
         sorted_keys = sorted(signed_payload.keys())
         
         # 3. 拼接成 "key1=value1&key2=value2" 格式的字符串
-        # 使用与官方示例完全相同的格式：format会将整数自动转换为字符串
-        # 例如：timestamp=1580774512000
+        # 使用与官方示例完全相同的格式: format会将整数自动转换为字符串
+        # 例如: timestamp=1580774512000
         query_string = '&'.join(["{}={}".format(k, signed_payload[k]) for k in sorted_keys])
 
         # 4. 使用HMAC-SHA256算法生成签名（与官方示例完全一致）
@@ -216,7 +216,7 @@ class RoostooClient:
         """
         [RCL_TopLevelCheck] 获取账户余额信息
         
-        重要：对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
+        重要: 对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
         和签名时使用的完全一致。与官方python_demo.py的实现保持一致。
         """
         # 生成签名（与官方示例完全一致）
@@ -231,7 +231,7 @@ class RoostooClient:
         """
         [RCL_TopLevelCheck] 获取挂单数量
         
-        重要：对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
+        重要: 对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
         和签名时使用的完全一致。与官方python_demo.py的实现保持一致。
         """
         # 生成签名（与官方示例完全一致）
@@ -252,10 +252,10 @@ class RoostooClient:
             'quantity': str(quantity),
         }
         if price is not None:
-            payload['type'] = 'LIMIT'  # 修复：使用 'type' 而不是 'order_type'
+            payload['type'] = 'LIMIT'  # 修复: 使用 'type' 而不是 'order_type'
             payload['price'] = str(price)
         else:
-            payload['type'] = 'MARKET'  # 修复：使用 'type' 而不是 'order_type'
+            payload['type'] = 'MARKET'  # 修复: 使用 'type' 而不是 'order_type'
         
         headers, data_string, _ = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
