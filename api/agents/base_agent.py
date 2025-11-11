@@ -62,6 +62,7 @@ class BaseAgent(threading.Thread):
         # Agent 内部状态（可扩展）
         self.last_market_snapshot: Optional[Dict[str, Any]] = None
         self.dialog_history: List[Dict[str, str]] = []
+        self._first_decision_made = False  # 标记是否已做出第一个决策（用于强制第一个决策必须交易）
         
         # 聚合市场数据
         self.current_tickers: Dict[str, Dict[str, Any]] = {}  # pair -> ticker data
@@ -201,10 +202,15 @@ Based on this information, what trading action do you recommend? Provide your de
         # 添加当前用户提示
         messages.append({"role": "user", "content": user_prompt})
 
-        # 请求 LLM 得到决策
+        # 请求 LLM 得到决策（提高temperature到0.7，让模型更愿意做出决策）
         try:
-            llm_out = self.llm.chat(messages, temperature=0.5, max_tokens=512)
+            llm_out = self.llm.chat(messages, temperature=0.7, max_tokens=512)
             decision_text = llm_out.get("content") or ""
+            
+            # 强制第一个决策必须是非wait/hold
+            if not self._first_decision_made:
+                decision_text = self._force_first_decision(decision_text)
+                self._first_decision_made = True
             
             # 验证JSON格式（如果可能）
             json_valid = self._validate_json_decision(decision_text)
@@ -228,6 +234,82 @@ Based on this information, what trading action do you recommend? Provide your de
                 print(f"[{self.name}] 资金额度: {self.allocated_capital:.2f} USD")
         except Exception as e:
             print(f"[{self.name}] Error generating decision: {e}")
+    
+    def _force_first_decision(self, decision_text: str) -> str:
+        """
+        强制第一个决策必须是非wait/hold的交易决策
+        
+        Args:
+            decision_text: LLM生成的原始决策文本
+            
+        Returns:
+            修改后的决策文本（如果是wait/hold则强制转换为open_long）
+        """
+        import json
+        import re
+        
+        # 检查是否是wait/hold
+        is_wait_hold = False
+        action_from_json = None
+        
+        try:
+            # 尝试解析JSON格式
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                data = json.loads(json_str)
+                action_from_json = data.get("action", "").lower()
+                if action_from_json in ["wait", "hold"]:
+                    is_wait_hold = True
+        except (json.JSONDecodeError, ValueError):
+            # JSON解析失败，检查自然语言
+            text_lower = decision_text.lower()
+            if any(word in text_lower for word in ["hold", "wait", "no action", "no trade", "do nothing"]):
+                # 检查是否同时包含交易动作
+                if not any(word in text_lower for word in ["open_long", "close_long", "buy", "sell", "open", "close"]):
+                    is_wait_hold = True
+        
+        # 如果是wait/hold，强制转换为open_long
+        if is_wait_hold:
+            print(f"[{self.name}] ⚠️ 第一个决策是 wait/hold，强制转换为 open_long")
+            
+            # 获取当前价格
+            current_price = 100000.0  # 默认价格
+            if self.last_market_snapshot:
+                ticker = self.last_market_snapshot.get("ticker")
+                if ticker and isinstance(ticker, dict):
+                    current_price = ticker.get("price", current_price)
+            
+            # 构建强制交易决策
+            forced_decision = {
+                "action": "open_long",
+                "symbol": "BTCUSDT",
+                "price_ref": current_price,
+                "position_size_usd": 500.0,
+                "confidence": 65,
+                "reasoning": "First decision forced: System requires initial trading action. Market conditions are reasonable enough to start trading with conservative position size."
+            }
+            
+            # 如果原决策是JSON格式，尝试保留其他字段
+            if action_from_json is not None:
+                try:
+                    json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(0)
+                        original_data = json.loads(json_str)
+                        # 保留symbol和price_ref（如果原决策有）
+                        if "symbol" in original_data:
+                            forced_decision["symbol"] = original_data["symbol"]
+                        if "price_ref" in original_data:
+                            forced_decision["price_ref"] = original_data["price_ref"]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            
+            # 返回JSON格式的强制决策
+            return json.dumps(forced_decision, ensure_ascii=False)
+        
+        # 不是wait/hold，返回原决策
+        return decision_text
     
     def _validate_json_decision(self, text: str) -> bool:
         """
