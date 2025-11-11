@@ -68,13 +68,39 @@ def _to_pair_with_slash(symbol: str) -> str:
 def load_all_tradeable_usd_pairs() -> list:
     """
     从 exchangeInfo 动态加载可交易的 USD 计价交易对，统一为 'BASE/USD'。
-    解析失败时回退为 ['BTC/USD']。
+    支持多种API响应格式，解析失败时回退为 ['BTC/USD']。
     """
     try:
         client = RoostooClient()
+        logger.info(f"[LoadPairs] Using API: {client.base_url}")
         info = client.get_exchange_info()
+        
         candidates = []
         if isinstance(info, dict):
+            # 方法1: 检查 data.TradePairs (Roostoo API的标准格式)
+            data = info.get("data", info)
+            if isinstance(data, dict) and "TradePairs" in data:
+                trade_pairs = data["TradePairs"]
+                if isinstance(trade_pairs, dict):
+                    # TradePairs 是字典，key就是交易对名称
+                    for pair_key in trade_pairs.keys():
+                        candidates.append(_to_pair_with_slash(pair_key))
+                elif isinstance(trade_pairs, list):
+                    # TradePairs 是列表
+                    for item in trade_pairs:
+                        if isinstance(item, str):
+                            candidates.append(_to_pair_with_slash(item))
+                        elif isinstance(item, dict):
+                            pair_val = item.get("Pair") or item.get("pair") or item.get("Symbol") or item.get("symbol")
+                            if pair_val:
+                                candidates.append(_to_pair_with_slash(pair_val))
+            
+            # 方法2: 检查顶层的 TradePairs
+            if "TradePairs" in info and isinstance(info["TradePairs"], dict):
+                for pair_key in info["TradePairs"].keys():
+                    candidates.append(_to_pair_with_slash(pair_key))
+            
+            # 方法3: 检查 Symbols (某些API格式)
             if "Symbols" in info and isinstance(info["Symbols"], list):
                 for item in info["Symbols"]:
                     pair_val = None
@@ -84,7 +110,9 @@ def load_all_tradeable_usd_pairs() -> list:
                         pair_val = item
                     if pair_val:
                         candidates.append(_to_pair_with_slash(pair_val))
-            elif "symbols" in info and isinstance(info["symbols"], list):
+            
+            # 方法4: 检查 symbols (小写)
+            if "symbols" in info and isinstance(info["symbols"], list):
                 for item in info["symbols"]:
                     pair_val = None
                     if isinstance(item, dict):
@@ -93,20 +121,31 @@ def load_all_tradeable_usd_pairs() -> list:
                         pair_val = item
                     if pair_val:
                         candidates.append(_to_pair_with_slash(pair_val))
-            elif "Pairs" in info and isinstance(info["Pairs"], list):
+            
+            # 方法5: 检查 Pairs
+            if "Pairs" in info and isinstance(info["Pairs"], list):
                 for s in info["Pairs"]:
                     candidates.append(_to_pair_with_slash(s))
+        
         # 仅保留 USD 计价，去重且保持顺序
         seen = set()
         usd_pairs = []
         for p in candidates:
-            if p.endswith("/USD") and p not in seen:
-                seen.add(p)
-                usd_pairs.append(p)
+            normalized = _to_pair_with_slash(p)
+            if normalized.endswith("/USD") and normalized not in seen:
+                seen.add(normalized)
+                usd_pairs.append(normalized)
+        
         if not usd_pairs:
+            logger.warning(f"[LoadPairs] ⚠️ 未找到USD交易对，使用默认值 BTC/USD")
+            logger.warning(f"[LoadPairs] Debug: candidates = {candidates[:10]}...")
             usd_pairs = ["BTC/USD"]
+        
         return usd_pairs
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[LoadPairs] Failed to load exchange info: {e}")
+        import traceback
+        traceback.print_exc()
         return ["BTC/USD"]
 
 
