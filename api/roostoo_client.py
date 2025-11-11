@@ -210,18 +210,27 @@ class RoostooClient:
         return self._request('GET', '/v3/ticker', params=params, timeout=timeout)
 
     def get_balance(self, timeout: Optional[float] = None) -> Dict:
-        """[RCL_TopLevelCheck] 获取账户余额信息"""
-        headers, _, timestamp = self._sign_request({})
-        # 对于GET请求，timestamp需要作为URL参数，使用签名时的时间戳
-        params = {'timestamp': timestamp}
-        return self._request('GET', '/v3/balance', headers=headers, params=params, timeout=timeout)
+        """
+        [RCL_TopLevelCheck] 获取账户余额信息
+        
+        重要：对于GET请求，必须使用签名时生成的total_params字符串作为查询字符串，
+        确保服务器验证签名时使用的查询字符串和签名时使用的完全一致。
+        """
+        headers, total_params, _ = self._sign_request({})
+        # 对于GET请求，直接使用签名时生成的total_params字符串拼接到URL
+        # 确保服务器验证签名时使用的查询字符串和签名时使用的完全一致
+        return self._request('GET', f'/v3/balance?{total_params}', headers=headers, timeout=timeout)
 
     def get_pending_count(self, timeout: Optional[float] = None) -> Dict:
-        """[RCL_TopLevelCheck] 获取挂单数量"""
-        headers, _, timestamp = self._sign_request({})
-        # 对于GET请求，timestamp需要作为URL参数，使用签名时的时间戳
-        params = {'timestamp': timestamp}
-        return self._request('GET', '/v3/pending_count', headers=headers, params=params, timeout=timeout)
+        """
+        [RCL_TopLevelCheck] 获取挂单数量
+        
+        重要：对于GET请求，必须使用签名时生成的total_params字符串作为查询字符串，
+        确保服务器验证签名时使用的查询字符串和签名时使用的完全一致。
+        """
+        headers, total_params, _ = self._sign_request({})
+        # 对于GET请求，直接使用签名时生成的total_params字符串拼接到URL
+        return self._request('GET', f'/v3/pending_count?{total_params}', headers=headers, timeout=timeout)
 
     def place_order(self, pair: str, side: str, quantity: float, price: Optional[float] = None) -> Dict:
         """
