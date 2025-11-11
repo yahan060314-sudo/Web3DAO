@@ -58,6 +58,29 @@ class MarketDataCollector(threading.Thread):
         self.formatter = DataFormatter()
         self._stopped = False
         
+        # 处理交易对列表
+        if pairs is None and auto_discover_pairs:
+            self.pairs = self._discover_available_pairs()
+        else:
+            self.pairs = pairs or ["BTC/USD"]
+        
+        # 处理采集间隔
+        if collect_interval is None:
+            # 根据交易对数量自动计算间隔（确保不超过API限频）
+            # 假设每分钟最多5次API调用，每个交易对需要1次调用
+            # 计算需要的总时间，然后分配
+            num_pairs = len(self.pairs)
+            if num_pairs > 0:
+                # 每分钟5次 = 每12秒1次，但如果有多个交易对，需要分批
+                # 使用batch_size分批采集，每批需要的时间
+                batches = (num_pairs + self.batch_size - 1) // self.batch_size  # 向上取整
+                # 每批之间间隔至少12秒（符合每分钟5次限制）
+                self.collect_interval = max(12.0, batches * 2.0)  # 至少12秒，或根据批次计算
+            else:
+                self.collect_interval = 12.0
+        else:
+            self.collect_interval = collect_interval
+        
         # 缓存上次采集的数据，用于对比变化
         self._last_tickers: Dict[str, Dict[str, Any]] = {}  # 存储所有交易对的ticker数据
         self._last_balance: Optional[Dict[str, Any]] = None
