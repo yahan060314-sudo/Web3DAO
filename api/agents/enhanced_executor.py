@@ -145,15 +145,50 @@ class EnhancedTradeExecutor(threading.Thread):
                 return
         
         # 3. 单AI决策执行
+        # 首先检查是否是wait/hold决策（这是有效的决策，不需要执行交易）
+        decision_text = str(decision_msg.get("decision", "")).strip()
+        is_wait_hold = False
+        if decision_text:
+            try:
+                # 尝试解析JSON格式
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    data = json.loads(json_str)
+                    action = data.get("action", "").lower()
+                    if action in ["wait", "hold"]:
+                        is_wait_hold = True
+            except (json.JSONDecodeError, ValueError):
+                pass
+            
+            # 检查自然语言格式
+            if not is_wait_hold:
+                text_lower = decision_text.lower()
+                if any(word in text_lower for word in ["hold", "wait", "no action", "no trade", "do nothing"]):
+                    is_wait_hold = True
+        
+        if is_wait_hold:
+            # wait/hold是有效的决策，不需要执行交易
+            print(f"[EnhancedExecutor] ✓ 决策为 wait/hold，无需执行交易")
+            
+            # 记录执行结果（跳过，不是失败）
+            if self.decision_manager and decision_id:
+                self.decision_manager.record_execution_result(
+                    decision_id=decision_id,
+                    status="skipped",
+                    error="Decision is wait/hold, no action needed"
+                )
+            return
+        
         # 解析决策（使用原有的解析逻辑）
         parsed = self._parse_decision(decision_msg)
         
         if parsed is None:
-            # 决策无法解析
+            # 决策无法解析（不是wait/hold，但无法解析）
             if json_valid is False:
                 print(f"[EnhancedExecutor] ✗ 决策格式无效（非JSON）")
             else:
-                print(f"[EnhancedExecutor] ⚠️ 决策无法解析（可能是 wait/hold）")
+                print(f"[EnhancedExecutor] ✗ 决策无法解析（格式错误）")
             
             # 记录执行结果（失败）
             if self.decision_manager and decision_id:
