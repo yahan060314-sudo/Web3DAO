@@ -58,11 +58,13 @@ class RoostooClient:
                 用于POST请求的已签名参数字符串
             )。
         """
-        timestamp = self._get_timestamp()
-        signed_payload = payload.copy()
-        signed_payload['timestamp'] = timestamp
-
-        sorted_keys = sorted(signed_payload.keys())
+        # 检查secret_key是否存在
+        if not self.secret_key:
+            raise ValueError("ROOSTOO_SECRET_KEY is not set. Please check your .env file.")
+        
+        # 按照key的字母顺序排序参数（与官方示例完全一致）
+        # 官方示例: query_string = '&'.join(["{}={}".format(k, params[k]) for k in sorted(params.keys())])
+        query_string = '&'.join(["{}={}".format(k, params[k]) for k in sorted(params.keys())])
         
         # 这个字符串既是签名内容，也是POST请求的body
         query_string = '&'.join([f"{k}={signed_payload[k]}" for k in sorted_keys])
@@ -197,9 +199,12 @@ class RoostooClient:
         else:
             payload['type'] = 'MARKET'
         
-        # 对于POST，使用签名生成的字符串作为data是正确的
-        headers, _, data_string = self._sign_request(payload)
-        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        # 生成签名（与官方示例完全一致）
+        try:
+            signature = self.generate_signature(payload)
+        except Exception as e:
+            print(f"[RoostooClient] Error generating signature: {e}")
+            raise
         
         # 构建请求头（与官方示例完全一致）
         headers = {
