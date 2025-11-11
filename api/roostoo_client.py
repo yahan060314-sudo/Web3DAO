@@ -6,7 +6,6 @@ import hmac
 import hashlib
 import requests
 from typing import Dict, Any, Optional, Tuple
-from urllib.parse import urlencode
 
 # 假设您的项目结构中有一个 config/credentials.py 文件来加载环境变量
 # 如果没有，您可以直接在这里使用 os.getenv
@@ -60,7 +59,7 @@ class RoostooClient:
     def _sign_request(self, payload: Dict[str, Any]) -> Tuple[Dict[str, str], str, str]:
         """
         为RCL_TopLevelCheck请求生成签名和头部。
-        严格遵循README.md中的签名规则。
+        严格遵循官方文档中的签名规则。
 
         Args:
             payload (Dict[str, Any]): 请求的业务参数。
@@ -76,7 +75,9 @@ class RoostooClient:
         sorted_payload = sorted(payload.items())
 
         # 3. 拼接成 "key1=value1&key2=value2" 格式的字符串
-        total_params = urlencode(sorted_payload)
+        # 注意：官方文档示例显示使用原始字符串拼接，不使用URL编码
+        # 例如：pair=BNB/USD&quantity=2000&side=BUY&timestamp=1580774512000&type=MARKET
+        total_params = "&".join(f"{k}={v}" for k, v in sorted_payload)
 
         # 4. 使用HMAC-SHA256算法生成签名
         signature = hmac.new(
@@ -223,17 +224,21 @@ class RoostooClient:
         return self._request('GET', '/v3/pending_count', headers=headers, params=params, timeout=timeout)
 
     def place_order(self, pair: str, side: str, quantity: float, price: Optional[float] = None) -> Dict:
-        """[RCL_TopLevelCheck] 下新订单（市价或限价）"""
+        """
+        [RCL_TopLevelCheck] 下新订单（市价或限价）
+        
+        根据官方文档，参数名应该是 'type' 而不是 'order_type'
+        """
         payload = {
             'pair': pair,
             'side': side.upper(), # 'BUY' or 'SELL'
             'quantity': str(quantity),
         }
         if price is not None:
-            payload['order_type'] = 'LIMIT'
+            payload['type'] = 'LIMIT'  # 修复：使用 'type' 而不是 'order_type'
             payload['price'] = str(price)
         else:
-            payload['order_type'] = 'MARKET'
+            payload['type'] = 'MARKET'  # 修复：使用 'type' 而不是 'order_type'
         
         headers, data_string, _ = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
