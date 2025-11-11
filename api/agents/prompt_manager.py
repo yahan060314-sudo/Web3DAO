@@ -100,17 +100,22 @@ Risk Level: {risk_level}
         risk_guidelines = {
             "conservative": "Be very cautious. Only trade when there's high confidence. Preserve capital.",
             "moderate": "Balance risk and reward. Look for good opportunities but don't take excessive risks. Make decisions when you have reasonable confidence (70%+).",
-            "aggressive": "Be more active in trading. Take calculated risks for higher returns."
+            "aggressive": "Be active in trading. Take calculated risks for higher returns. Make decisions when you have 60%+ confidence. Don't wait for perfect conditions - act on reasonable opportunities."
         }
         
         base_prompt += f"\nRisk Guidelines: {risk_guidelines.get(risk_level, risk_guidelines['moderate'])}\n"
         
-        base_prompt += """
+        # 根据风险等级调整信心度阈值
+        confidence_threshold = "60%" if risk_level == "aggressive" else "70%"
+        
+        base_prompt += f"""
 IMPORTANT - Decision Making Philosophy:
-- You should make trading decisions when you have reasonable confidence (70%+ confidence is sufficient)
+- You should make trading decisions when you have reasonable confidence ({confidence_threshold} confidence is sufficient)
+- For initial decisions and when market data is available, {confidence_threshold} confidence is enough to take action
 - Don't always choose wait/hold - analyze the market and make decisions when opportunities exist
-- Only choose wait/hold when market conditions are truly unclear or unfavorable
+- Only choose wait/hold when market conditions are truly unclear or unfavorable (not just uncertain)
 - Be proactive in identifying trading opportunities based on available market data
+- Remember: Missing opportunities is also a risk - act when you have reasonable confidence
 
 When making decisions, provide clear reasoning:
 - What market signals you're seeing
@@ -187,9 +192,12 @@ Example valid outputs:
         
         if require_decision:
             prompt += """IMPORTANT: You MUST make a trading decision based on the available market data:
-- If you see a reasonable opportunity (70%+ confidence), choose "open_long" or "close_long"
-- Only choose "wait" or "hold" if market conditions are truly unclear or unfavorable
+- Confidence threshold is LOWERED: 60%+ confidence is sufficient (not 85%+)
+- If you see a reasonable opportunity (60%+ confidence), choose "open_long" or "close_long"
+- Only choose "wait" or "hold" if market conditions are truly unclear or unfavorable (not just uncertain)
 - Don't be overly cautious - make a decision based on the current market data
+- Remember: Acting with 60% confidence is better than waiting indefinitely
+- Use smaller position size (300-500 USD) if you're less confident, but still make a decision
 
 """
         

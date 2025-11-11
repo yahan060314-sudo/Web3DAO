@@ -69,34 +69,88 @@ class TradeExecutor(threading.Thread):
         # 首先检查是否是wait/hold决策（这是有效的决策，不需要执行交易）
         decision_text = str(decision_msg.get("decision", "")).strip()
         is_wait_hold = False
+        action_from_json = None
+        
+        # 调试：打印完整决策文本（前500字符）
+        agent = decision_msg.get("agent", "unknown")
+        print(f"[Executor] Debug: 收到决策 (Agent: {agent})")
+        print(f"[Executor] Debug: 决策文本前500字符: {decision_text[:500]}")
+        
         if decision_text:
             try:
                 # 尝试解析JSON格式
                 json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(0)
+                    print(f"[Executor] Debug: 提取的JSON: {json_str[:200]}")
                     data = json.loads(json_str)
-                    action = data.get("action", "").lower()
-                    if action in ["wait", "hold"]:
+                    action_from_json = data.get("action", "").lower()
+                    print(f"[Executor] Debug: 解析的action: {action_from_json}")
+                    
+                    # 明确检查：只有wait/hold才是wait/hold，其他action（如open_long, close_long等）都不是
+                    if action_from_json in ["wait", "hold"]:
                         is_wait_hold = True
-            except (json.JSONDecodeError, ValueError):
+                        print(f"[Executor] Debug: 确认为wait/hold决策")
+                    else:
+                        print(f"[Executor] Debug: action={action_from_json}，不是wait/hold，继续正常解析")
+            except (json.JSONDecodeError, ValueError) as e:
+                # JSON解析失败，继续检查自然语言
+                print(f"[Executor] Debug: JSON解析失败: {e}")
                 pass
             
-            # 检查自然语言格式
-            if not is_wait_hold:
+            # 检查自然语言格式（只有在JSON解析失败或没有action字段时才检查）
+            if not is_wait_hold and action_from_json is None:
                 text_lower = decision_text.lower()
-                if any(word in text_lower for word in ["hold", "wait", "no action", "no trade", "do nothing"]):
+                # 更严格的检查：确保文本中明确包含wait/hold，且不包含交易动作
+                wait_hold_keywords = ["hold", "wait", "no action", "no trade", "do nothing"]
+                trade_keywords = ["open_long", "close_long", "buy", "sell", "open", "close"]
+                
+                has_wait_hold = any(word in text_lower for word in wait_hold_keywords)
+                has_trade_action = any(word in text_lower for word in trade_keywords)
+                
+                # 只有在明确有wait/hold且没有交易动作时才认为是wait/hold
+                if has_wait_hold and not has_trade_action:
                     is_wait_hold = True
+                    print(f"[Executor] Debug: 自然语言确认为wait/hold")
+                elif has_trade_action:
+                    print(f"[Executor] Debug: 检测到交易动作，不是wait/hold")
         
         # 如果是第一个决策且是wait/hold，强制转换为一个合理的交易决策
         if is_wait_hold and not self._first_decision_processed:
             agent = decision_msg.get("agent", "unknown")
             print(f"[Executor] ⚠️ 第一个决策是 wait/hold，强制转换为初始交易决策 (Agent: {agent})")
-            # 获取当前价格
+            # 获取当前价格（尝试多种路径）
             market_snapshot = decision_msg.get("market_snapshot")
             current_price = None
-            if market_snapshot and market_snapshot.get("ticker"):
-                current_price = market_snapshot["ticker"].get("price")
+            
+            # 调试：打印market_snapshot结构
+            if market_snapshot:
+                print(f"[Executor] Debug: market_snapshot keys: {list(market_snapshot.keys()) if isinstance(market_snapshot, dict) else 'not a dict'}")
+            
+            # 尝试从不同路径获取价格
+            if market_snapshot:
+                # 路径1: market_snapshot["ticker"]["price"]
+                if isinstance(market_snapshot, dict):
+                    ticker = market_snapshot.get("ticker")
+                    if ticker and isinstance(ticker, dict):
+                        current_price = ticker.get("price")
+                    
+                    # 路径2: market_snapshot["price"] (直接)
+                    if not current_price:
+                        current_price = market_snapshot.get("price")
+                    
+                    # 路径3: 从决策JSON中获取price_ref
+                    if not current_price and decision_text:
+                        try:
+                            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+                            if json_match:
+                                json_str = json_match.group(0)
+                                data = json.loads(json_str)
+                                price_ref = data.get("price_ref")
+                                if price_ref:
+                                    current_price = float(price_ref)
+                        except (json.JSONDecodeError, ValueError, TypeError):
+                            pass
             
             if current_price:
                 # 强制创建一个买入决策（小额，保守）
@@ -110,9 +164,41 @@ class TradeExecutor(threading.Thread):
                 self._first_decision_processed = True
                 # 跳过后续解析，直接使用强制创建的决策
             else:
-                print(f"[Executor] ⚠️ 无法获取价格，跳过强制交易")
-                self._first_decision_processed = True
-                return
+                print(f"[Executor] ⚠️ 无法获取价格，尝试从API获取...")
+                # 如果无法从market_snapshot获取，尝试从API获取
+                try:
+                    if not self.dry_run and self.client:
+                        ticker = self.client.get_ticker(pair=self.default_pair)
+                        # 尝试从ticker响应中提取价格
+                        if isinstance(ticker, dict):
+                            data = ticker.get("Data", ticker.get("data", ticker))
+                            if isinstance(data, dict):
+                                pair_data = data.get(self.default_pair, data)
+                                if isinstance(pair_data, dict):
+                                    current_price = pair_data.get("LastPrice") or pair_data.get("price")
+                        
+                        if current_price:
+                            current_price = float(current_price)
+                            print(f"[Executor] 从API获取价格成功: {current_price}")
+                            parsed = {
+                                "side": "BUY",
+                                "quantity": 0.01,
+                                "price": None,  # 市价单
+                                "pair": self.default_pair
+                            }
+                            self._first_decision_processed = True
+                        else:
+                            print(f"[Executor] ⚠️ 从API也无法获取价格，跳过强制交易")
+                            self._first_decision_processed = True
+                            return
+                    else:
+                        print(f"[Executor] ⚠️ 无法获取价格（dry_run模式或无客户端），跳过强制交易")
+                        self._first_decision_processed = True
+                        return
+                except Exception as e:
+                    print(f"[Executor] ⚠️ 从API获取价格失败: {e}，跳过强制交易")
+                    self._first_decision_processed = True
+                    return
         elif is_wait_hold:
             # 非第一个决策的wait/hold，正常处理
             agent = decision_msg.get("agent", "unknown")
@@ -121,6 +207,11 @@ class TradeExecutor(threading.Thread):
         else:
             # 不是wait/hold，正常解析
             parsed = self._parse_decision(decision_msg)
+        
+        # 标记第一个决策已处理（无论是否成功解析）
+        if not self._first_decision_processed:
+            self._first_decision_processed = True
+        
         if parsed is None:
             decision_text = str(decision_msg.get("decision", ""))[:100]
             json_valid = decision_msg.get("json_valid", None)
@@ -142,48 +233,102 @@ class TradeExecutor(threading.Thread):
         price = parsed.get("price")
         pair = parsed.get("pair", self.default_pair)
         
-        # 标记第一个决策已处理
-        if not self._first_decision_processed:
-            self._first_decision_processed = True
-        
         # 记录解析结果
         order_type = "LIMIT" if price else "MARKET"
-        print(f"[Executor] Parsed decision:")
-        print(f"  Side: {side}")
-        print(f"  Pair: {pair}")
-        print(f"  Quantity: {quantity}")
-        print(f"  Price: {price if price else 'MARKET'}")
-        print(f"  Order Type: {order_type}")
+        agent = decision_msg.get("agent", "unknown")
+        print(f"[Executor] ========================================")
+        print(f"[Executor] 决策解析成功")
+        print(f"[Executor] ========================================")
+        print(f"[Executor] Agent: {agent}")
+        print(f"[Executor] 方向: {side}")
+        print(f"[Executor] 交易对: {pair}")
+        print(f"[Executor] 数量: {quantity}")
+        print(f"[Executor] 价格: {price if price else 'MARKET'}")
+        print(f"[Executor] 订单类型: {order_type}")
         if "json_data" in parsed:
-            print(f"  Source: JSON format")
+            print(f"[Executor] 来源: JSON格式")
+            json_data = parsed.get("json_data", {})
+            if "confidence" in json_data:
+                print(f"[Executor] 信心度: {json_data['confidence']}%")
+            if "reasoning" in json_data:
+                print(f"[Executor] 理由: {json_data['reasoning'][:100]}...")
         else:
-            print(f"  Source: Natural language format")
+            print(f"[Executor] 来源: 自然语言格式")
+        print(f"[Executor] ========================================")
 
         # 下单（市价为主，若解析到价格则下限价单）
         try:
+            # 验证参数
+            if quantity <= 0:
+                print(f"[Executor] ✗ 无效的数量: {quantity}")
+                return
+            
+            if not pair:
+                print(f"[Executor] ✗ 无效的交易对: {pair}")
+                return
+            
+            print(f"[Executor] ========================================")
+            print(f"[Executor] 准备下单到Roostoo API")
+            print(f"[Executor] ========================================")
+            print(f"[Executor] 交易对: {pair}")
+            print(f"[Executor] 方向: {side}")
+            print(f"[Executor] 数量: {quantity}")
+            print(f"[Executor] 订单类型: {'LIMIT' if price else 'MARKET'}")
+            if price:
+                print(f"[Executor] 限价: {price}")
+            print(f"[Executor] ========================================")
+            
             if self.dry_run:
                 # 测试模式：只打印参数，不真正下单
-                print(f"[Executor] [DRY RUN] Would place order:")
-                print(f"  - pair: {pair}")
-                print(f"  - side: {side}")
-                print(f"  - quantity: {quantity}")
-                print(f"  - price: {price if price else 'MARKET'}")
-                print(f"[Executor] [DRY RUN] Order NOT placed (dry_run=True)")
+                print(f"[Executor] [DRY RUN] 模拟下单（不会真正执行）")
+                print(f"[Executor] [DRY RUN] ✓ 决策已成功解析并准备执行")
                 # 在测试模式下也更新时间戳，避免测试时频繁打印
                 self._last_order_ts = now
             else:
                 # 真实模式：真正下单
+                print(f"[Executor] 正在连接Roostoo API...")
+                if not self.client:
+                    print(f"[Executor] ✗ 错误: RoostooClient未初始化")
+                    return
+                
+                print(f"[Executor] 调用 place_order API...")
                 if price is None:
                     resp = self.client.place_order(pair=pair, side=side, quantity=quantity)
                 else:
                     resp = self.client.place_order(pair=pair, side=side, quantity=quantity, price=price)
                 
-                print(f"[Executor] ✓ Order placed successfully: {resp}")
+                print(f"[Executor] ========================================")
+                print(f"[Executor] ✓ 订单已成功提交到Roostoo API")
+                print(f"[Executor] ========================================")
+                print(f"[Executor] API响应: {resp}")
+                print(f"[Executor] ========================================")
+                
+                # 检查响应是否成功
+                if isinstance(resp, dict):
+                    if "code" in resp:
+                        if resp["code"] == 0 or resp["code"] == 200:
+                            print(f"[Executor] ✓ 订单执行成功 (code: {resp['code']})")
+                        else:
+                            print(f"[Executor] ⚠️ 订单响应代码: {resp['code']}, 消息: {resp.get('message', 'N/A')}")
+                    elif "order_id" in resp or "data" in resp:
+                        print(f"[Executor] ✓ 订单已创建，响应包含订单信息")
+                    else:
+                        print(f"[Executor] ⚠️ 订单响应格式异常，但已发送到API")
+                
                 self._last_order_ts = now
         except Exception as e:
-            print(f"[Executor] ✗ Failed to place order: {e}")
+            print(f"[Executor] ========================================")
+            print(f"[Executor] ✗ 下单失败")
+            print(f"[Executor] ========================================")
+            print(f"[Executor] 错误类型: {type(e).__name__}")
+            print(f"[Executor] 错误信息: {str(e)}")
+            import traceback
+            print(f"[Executor] 错误堆栈:")
+            traceback.print_exc()
+            print(f"[Executor] ========================================")
             if not self.dry_run:
-                raise  # 真实模式下抛出异常
+                # 真实模式下记录错误但不中断运行
+                print(f"[Executor] ⚠️ 下单失败，但系统继续运行")
 
     def _parse_decision(self, decision_msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -251,15 +396,20 @@ class TradeExecutor(threading.Thread):
             # 转换symbol格式：BTCUSDT -> BTC/USD
             pair = self._convert_symbol_to_pair(symbol) if symbol else self.default_pair
             
-            # 从position_size_usd计算quantity（需要价格）
-            position_size_usd = data.get("position_size_usd")
-            price_ref = data.get("price_ref")
-            
-            if position_size_usd and price_ref:
-                quantity = float(position_size_usd) / float(price_ref)
+            # 优先使用quantity字段，如果没有则从position_size_usd计算
+            quantity = data.get("quantity")
+            if quantity is None:
+                # 从position_size_usd计算quantity（需要价格）
+                position_size_usd = data.get("position_size_usd")
+                price_ref = data.get("price_ref")
+                
+                if position_size_usd and price_ref:
+                    quantity = float(position_size_usd) / float(price_ref)
+                else:
+                    # 如果都没有，使用默认值
+                    quantity = 0.01
             else:
-                # 如果没有position_size_usd，尝试其他字段
-                quantity = data.get("quantity", 0.01)
+                quantity = float(quantity)
             
             # 提取价格（限价单）
             price = data.get("price") or data.get("price_ref")
