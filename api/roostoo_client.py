@@ -40,46 +40,25 @@ class RoostooClient:
         """生成13位毫秒级时间戳整数（与官方示例保持一致）。"""
         return int(time.time() * 1000)
 
-    def _sign_request(self, payload: Dict[str, Any]) -> Tuple[Dict[str, str], str, int]:
+    def generate_signature(self, params: Dict[str, Any]) -> str:
         """
-        为RCL_TopLevelCheck请求生成签名和头部。
-        严格遵循官方文档中的签名规则，与官方python_demo.py保持一致。
-
+        生成HMAC SHA256签名。
+        严格遵循官方python_demo.py中的generate_signature函数实现。
+        
         Args:
-            payload (Dict[str, Any]): 请求的业务参数。
-
+            params (Dict[str, Any]): 请求参数字典
+            
         Returns:
-            Tuple[Dict[str, str], str, int]: 一个元组，包含(请求头, 用于POST data的参数字符串, 时间戳整数)。
+            str: 签名字符串
         """
-        # 1. 添加时间戳（整数，与官方示例保持一致）
-        timestamp = self._get_timestamp()
-        # 创建新的字典，避免修改原始payload
-        signed_payload = payload.copy()
-        signed_payload['timestamp'] = timestamp
-
-        # 2. 按照key的字母顺序排序参数（与官方示例完全一致）
+        # 按照key的字母顺序排序参数（与官方示例完全一致）
         # 官方示例: query_string = '&'.join(["{}={}".format(k, params[k]) for k in sorted(params.keys())])
-        sorted_keys = sorted(signed_payload.keys())
+        query_string = '&'.join(["{}={}".format(k, params[k]) for k in sorted(params.keys())])
         
-        # 3. 拼接成 "key1=value1&key2=value2" 格式的字符串
-        # 使用与官方示例完全相同的格式: format会将整数自动转换为字符串
-        # 例如: timestamp=1580774512000
-        query_string = '&'.join(["{}={}".format(k, signed_payload[k]) for k in sorted_keys])
-
-        # 4. 使用HMAC-SHA256算法生成签名（与官方示例完全一致）
-        signature = hmac.new(
-            self.secret_key.encode('utf-8'),
-            query_string.encode('utf-8'),
-            hashlib.sha256
-        ).hexdigest()
-
-        # 5. 构建请求头
-        headers = {
-            'RST-API-KEY': self.api_key,
-            'MSG-SIGNATURE': signature
-        }
-        
-        return headers, query_string, timestamp
+        # 使用HMAC-SHA256算法生成签名（与官方示例完全一致）
+        us = self.secret_key.encode('utf-8')
+        m = hmac.new(us, query_string.encode('utf-8'), hashlib.sha256)
+        return m.hexdigest()
 
     def _request(self, method: str, path: str, timeout: Optional[float] = None, max_retries: int = 3, retry_delay: float = 1.0, **kwargs):
         """
@@ -183,73 +162,127 @@ class RoostooClient:
     def get_balance(self, timeout: Optional[float] = None) -> Dict:
         """
         [RCL_TopLevelCheck] 获取账户余额信息
-        
-        重要: 对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
-        和签名时使用的完全一致。与官方python_demo.py的实现保持一致。
+        严格按照官方python_demo.py中的get_balance()函数实现。
         """
-        # 生成签名（与官方示例完全一致）
-        # _sign_request会在内部添加timestamp，确保签名和请求使用相同的时间戳
-        headers, query_string, _ = self._sign_request({})
+        # 创建payload字典，包含timestamp（与官方示例完全一致）
+        payload = {
+            "timestamp": int(time.time() * 1000),
+        }
         
-        # 对于GET请求，直接使用签名时生成的query_string拼接到URL
-        # 确保服务器验证签名时使用的查询字符串和签名时使用的完全一致
-        return self._request('GET', f'/v3/balance?{query_string}', headers=headers, timeout=timeout)
+        # 生成签名（与官方示例完全一致）
+        signature = self.generate_signature(payload)
+        
+        # 构建请求头（与官方示例完全一致）
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature
+        }
+        
+        # 使用params参数，让requests库自动处理查询字符串（与官方示例完全一致）
+        return self._request('GET', '/v3/balance', headers=headers, params=payload, timeout=timeout)
 
     def get_pending_count(self, timeout: Optional[float] = None) -> Dict:
         """
         [RCL_TopLevelCheck] 获取挂单数量
-        
-        重要: 对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
-        和签名时使用的完全一致。与官方python_demo.py的实现保持一致。
+        严格按照官方python_demo.py中的pending_count()函数实现。
         """
-        # 生成签名（与官方示例完全一致）
-        headers, query_string, _ = self._sign_request({})
+        # 创建payload字典，包含timestamp（与官方示例完全一致）
+        payload = {
+            "timestamp": int(time.time() * 1000),
+        }
         
-        # 对于GET请求，直接使用签名时生成的query_string拼接到URL
-        return self._request('GET', f'/v3/pending_count?{query_string}', headers=headers, timeout=timeout)
+        # 生成签名（与官方示例完全一致）
+        signature = self.generate_signature(payload)
+        
+        # 构建请求头（与官方示例完全一致）
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature
+        }
+        
+        # 使用params参数，让requests库自动处理查询字符串（与官方示例完全一致）
+        return self._request('GET', '/v3/pending_count', headers=headers, params=payload, timeout=timeout)
 
     def place_order(self, pair: str, side: str, quantity: float, price: Optional[float] = None) -> Dict:
         """
         [RCL_TopLevelCheck] 下新订单（市价或限价）
+        严格按照官方python_demo.py中的place_order()函数实现。
         """
+        # 创建payload字典（与官方示例完全一致）
         payload = {
-            'pair': pair,
-            'side': side.upper(),
-            'quantity': str(quantity),
+            "timestamp": int(time.time() * 1000),
+            "pair": pair,
+            "side": side.upper(),
+            "quantity": quantity,
         }
-        if price is not None:
-            payload['type'] = 'LIMIT'  # 修复: 使用 'type' 而不是 'order_type'
-            payload['price'] = str(price)
+        
+        # 根据是否有价格设置订单类型（与官方示例完全一致）
+        if not price:
+            payload['type'] = "MARKET"
         else:
-            payload['type'] = 'MARKET'  # 修复: 使用 'type' 而不是 'order_type'
+            payload['type'] = "LIMIT"
+            payload['price'] = price
         
-        headers, data_string, _ = self._sign_request(payload)
-        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        # 生成签名（与官方示例完全一致）
+        signature = self.generate_signature(payload)
         
-        return self._request('POST', '/v3/place_order', headers=headers, data=data_string)
+        # 构建请求头（与官方示例完全一致）
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature
+        }
+        
+        # 使用data参数传递payload字典，requests会自动转换为form-urlencoded格式（与官方示例完全一致）
+        return self._request('POST', '/v3/place_order', headers=headers, data=payload)
 
     def query_order(self, order_id: Optional[str] = None, pair: Optional[str] = None) -> Dict:
-        """[RCL_TopLevelCheck] 查询订单"""
-        payload = {}
+        """
+        [RCL_TopLevelCheck] 查询订单
+        严格按照官方python_demo.py中的query_order()函数实现。
+        """
+        # 创建payload字典（与官方示例完全一致）
+        payload = {
+            "timestamp": int(time.time() * 1000),
+        }
         if order_id:
             payload['order_id'] = order_id
         elif pair:
             payload['pair'] = pair
-            
-        headers, data_string, _ = self._sign_request(payload)
-        headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
-        return self._request('POST', '/v3/query_order', headers=headers, data=data_string)
+        # 生成签名（与官方示例完全一致）
+        signature = self.generate_signature(payload)
+        
+        # 构建请求头（与官方示例完全一致）
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature
+        }
+        
+        # 使用data参数传递payload字典，requests会自动转换为form-urlencoded格式（与官方示例完全一致）
+        return self._request('POST', '/v3/query_order', headers=headers, data=payload)
 
     def cancel_order(self, order_id: Optional[str] = None, pair: Optional[str] = None) -> Dict:
-        """[RCL_TopLevelCheck] 取消订单"""
-        payload = {}
+        """
+        [RCL_TopLevelCheck] 取消订单
+        严格按照官方python_demo.py中的cancel_order()函数实现。
+        """
+        # 创建payload字典（与官方示例完全一致）
+        payload = {
+            "timestamp": int(time.time() * 1000),
+        }
         if order_id:
             payload['order_id'] = order_id
         elif pair:
             payload['pair'] = pair
-            
-        headers, data_string, _ = self._sign_request(payload)
-        headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
-        return self._request('POST', '/v3/cancel_order', headers=headers, data=data_string)
+        # 生成签名（与官方示例完全一致）
+        signature = self.generate_signature(payload)
+        
+        # 构建请求头（与官方示例完全一致）
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature
+        }
+        
+        # 使用data参数传递payload字典，requests会自动转换为form-urlencoded格式（与官方示例完全一致）
+        return self._request('POST', '/v3/cancel_order', headers=headers, data=payload)
