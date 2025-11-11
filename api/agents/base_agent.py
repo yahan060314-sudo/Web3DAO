@@ -29,7 +29,9 @@ class BaseAgent(threading.Thread):
                  decision_topic: str,
                  system_prompt: str,
                  poll_timeout: float = 1.0,
-                 decision_interval: float = 10.0):
+                 decision_interval: float = 10.0,
+                 llm_provider: Optional[str] = None,
+                 allocated_capital: Optional[float] = None):
         super().__init__(name=name)
         self.daemon = True
         self.bus = bus
@@ -40,7 +42,14 @@ class BaseAgent(threading.Thread):
         self.poll_timeout = poll_timeout
         self.decision_interval = decision_interval  # 决策生成间隔
         self._stopped = False
-        self.llm = get_llm_client()
+        
+        # 支持指定LLM提供商
+        self.llm_provider = llm_provider
+        self.llm = get_llm_client(provider=llm_provider)
+        
+        # 支持指定资金额度
+        self.allocated_capital = allocated_capital
+        
         self.formatter = DataFormatter()
 
         # Agent 内部状态（可扩展）
@@ -191,10 +200,14 @@ Based on this information, what trading action do you recommend? Provide your de
                 "decision": decision_text,
                 "market_snapshot": self.last_market_snapshot,
                 "timestamp": time.time(),
-                "json_valid": json_valid  # 标记JSON格式是否有效
+                "json_valid": json_valid,  # 标记JSON格式是否有效
+                "allocated_capital": self.allocated_capital,  # 添加资金额度信息
+                "llm_provider": self.llm_provider  # 添加LLM提供商信息
             }
             self.bus.publish(self.decision_topic, decision)
             print(f"[{self.name}] Published decision: {decision_text[:100]}")
+            if self.allocated_capital:
+                print(f"[{self.name}] 资金额度: {self.allocated_capital:.2f} USD")
         except Exception as e:
             print(f"[{self.name}] Error generating decision: {e}")
     

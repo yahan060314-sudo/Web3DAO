@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 from api.roostoo_client import RoostooClient
 from .bus import MessageBus
 from .decision_manager import DecisionManager
+from .capital_manager import CapitalManager
 from config.config import TRADE_INTERVAL_SECONDS
 
 
@@ -32,7 +33,8 @@ class EnhancedTradeExecutor(threading.Thread):
                  dry_run: bool = False,
                  enable_decision_manager: bool = True,
                  db_path: str = "decisions.db",
-                 enable_multi_ai_consensus: bool = True):
+                 enable_multi_ai_consensus: bool = True,
+                 capital_manager: Optional[CapitalManager] = None):
         """
         初始化增强版交易执行器
         
@@ -44,6 +46,7 @@ class EnhancedTradeExecutor(threading.Thread):
             enable_decision_manager: 是否启用决策管理器
             db_path: 数据库文件路径
             enable_multi_ai_consensus: 是否启用多AI决策综合
+            capital_manager: 资本管理器（用于管理资金分配）
         """
         super().__init__(name="EnhancedTradeExecutor")
         self.daemon = True
@@ -53,6 +56,11 @@ class EnhancedTradeExecutor(threading.Thread):
         self.default_pair = default_pair
         self._stopped = False
         self._last_order_ts: Optional[float] = None
+        
+        # 初始化资本管理器
+        self.capital_manager = capital_manager
+        if capital_manager:
+            print(f"[EnhancedExecutor] ✓ 资本管理器已启用")
         
         # 初始化 Roostoo 客户端
         if not dry_run:
@@ -131,7 +139,9 @@ class EnhancedTradeExecutor(threading.Thread):
             consensus_decision = self._try_get_consensus()
             if consensus_decision:
                 print(f"[EnhancedExecutor] ✓ 获取到多AI共识决策")
-                self._execute_decision(consensus_decision, decision_id)
+                consensus_decision["agent"] = agent  # 添加agent信息
+                consensus_decision["market_snapshot"] = market_snapshot  # 添加市场快照
+                self._execute_decision(consensus_decision, decision_id, market_snapshot, agent)
                 return
         
         # 3. 单AI决策执行
@@ -153,6 +163,10 @@ class EnhancedTradeExecutor(threading.Thread):
                     error="Decision cannot be parsed"
                 )
             return
+        
+        # 添加agent信息到parsed决策中
+        parsed["agent"] = agent
+        parsed["market_snapshot"] = market_snapshot
         
         # 4. 验证决策
         if self.decision_manager:
@@ -177,7 +191,7 @@ class EnhancedTradeExecutor(threading.Thread):
                 return
         
         # 5. 执行决策
-        self._execute_decision(parsed, decision_id, market_snapshot)
+        self._execute_decision(parsed, decision_id, market_snapshot, agent)
     
     def _try_get_consensus(self) -> Optional[Dict[str, Any]]:
         """
@@ -215,7 +229,8 @@ class EnhancedTradeExecutor(threading.Thread):
     def _execute_decision(self, 
                          parsed_decision: Dict[str, Any],
                          decision_id: Optional[int] = None,
-                         market_snapshot: Optional[Dict[str, Any]] = None) -> None:
+                         market_snapshot: Optional[Dict[str, Any]] = None,
+                         agent_name: Optional[str] = None) -> None:
         """
         执行决策
         
@@ -243,15 +258,70 @@ class EnhancedTradeExecutor(threading.Thread):
         quantity = parsed_decision["quantity"]
         price = parsed_decision.get("price")
         pair = parsed_decision.get("pair", self.default_pair)
+        # 优先使用参数中的agent_name，如果没有则从parsed_decision中获取
+        agent_name = agent_name or parsed_decision.get("agent", "unknown")
+        
+        # 计算交易金额（用于资金检查）
+        # 优先使用参数中的market_snapshot，如果没有则从parsed_decision中获取
+        snapshot_for_price = market_snapshot or parsed_decision.get("market_snapshot")
+        
+        if price:
+            trade_amount = quantity * price
+        else:
+            # 如果没有价格，使用市场快照中的价格
+            if snapshot_for_price and snapshot_for_price.get("ticker"):
+                current_price = snapshot_for_price["ticker"].get("price")
+                if current_price:
+                    trade_amount = quantity * current_price
+                else:
+                    trade_amount = None
+            else:
+                trade_amount = None
+        
+        # 检查资金额度（如果启用了资本管理器）
+        if self.capital_manager and trade_amount:
+            allocated_capital = self.capital_manager.get_allocated_capital(agent_name)
+            available_capital = self.capital_manager.get_available_capital(agent_name)
+            
+            if allocated_capital > 0:
+                # Agent有资金限制
+                if trade_amount > available_capital:
+                    print(f"[EnhancedExecutor] ✗ {agent_name} 可用资金不足: {available_capital:.2f} USD < {trade_amount:.2f} USD")
+                    
+                    # 记录执行结果（资金不足）
+                    if self.decision_manager and decision_id:
+                        self.decision_manager.record_execution_result(
+                            decision_id=decision_id,
+                            status="failed",
+                            error=f"Insufficient capital: {available_capital:.2f} < {trade_amount:.2f}"
+                        )
+                    return
+                
+                # 预留资金
+                if not self.capital_manager.reserve_capital(agent_name, trade_amount):
+                    print(f"[EnhancedExecutor] ✗ {agent_name} 资金预留失败")
+                    if self.decision_manager and decision_id:
+                        self.decision_manager.record_execution_result(
+                            decision_id=decision_id,
+                            status="failed",
+                            error="Capital reservation failed"
+                        )
+                    return
         
         # 记录决策信息
         order_type = "LIMIT" if price else "MARKET"
         print(f"[EnhancedExecutor] 执行决策:")
+        print(f"  Agent: {agent_name}")
         print(f"  Side: {side}")
         print(f"  Pair: {pair}")
         print(f"  Quantity: {quantity}")
         print(f"  Price: {price if price else 'MARKET'}")
         print(f"  Order Type: {order_type}")
+        if trade_amount:
+            print(f"  Trade Amount: {trade_amount:.2f} USD")
+            if self.capital_manager:
+                available = self.capital_manager.get_available_capital(agent_name)
+                print(f"  Available Capital: {available:.2f} USD")
         
         # 执行交易
         execution_start = time.time()
@@ -277,33 +347,51 @@ class EnhancedTradeExecutor(threading.Thread):
                         execution_time=execution_time
                     )
                 
+                # 在dry_run模式下，不真正占用资金，但可以记录
+                # 如果启用了资本管理器，可以在dry_run模式下模拟资金使用
+                # 这里我们选择不占用资金，因为dry_run只是测试
+                
                 self._last_order_ts = now
             else:
                 # 真实模式：真正下单
-                if price is None:
-                    resp = self.client.place_order(pair=pair, side=side, quantity=quantity)
-                else:
-                    resp = self.client.place_order(pair=pair, side=side, quantity=quantity, price=price)
-                
-                execution_time = time.time() - execution_start
-                order_id = resp.get("order_id") if isinstance(resp, dict) else str(resp)
-                
-                print(f"[EnhancedExecutor] ✓ 订单执行成功: {order_id}")
-                
-                # 记录执行结果
-                if self.decision_manager and decision_id:
-                    self.decision_manager.record_execution_result(
-                        decision_id=decision_id,
-                        order_id=order_id,
-                        status="success",
-                        execution_time=execution_time
-                    )
-                
-                self._last_order_ts = now
+                try:
+                    if price is None:
+                        resp = self.client.place_order(pair=pair, side=side, quantity=quantity)
+                    else:
+                        resp = self.client.place_order(pair=pair, side=side, quantity=quantity, price=price)
+                    
+                    execution_time = time.time() - execution_start
+                    order_id = resp.get("order_id") if isinstance(resp, dict) else str(resp)
+                    
+                    print(f"[EnhancedExecutor] ✓ 订单执行成功: {order_id}")
+                    
+                    # 记录执行结果
+                    if self.decision_manager and decision_id:
+                        self.decision_manager.record_execution_result(
+                            decision_id=decision_id,
+                            order_id=order_id,
+                            status="success",
+                            execution_time=execution_time
+                        )
+                    
+                    # 注意：在真实交易中，资金已经通过交易所扣除
+                    # 这里不需要手动释放资金，因为资金已经在交易所账户中
+                    # 但我们可以更新资本管理器的记录（如果需要）
+                    
+                    self._last_order_ts = now
+                except Exception as order_error:
+                    # 订单失败，释放预留的资金
+                    if self.capital_manager and trade_amount:
+                        self.capital_manager.release_capital(agent_name, trade_amount)
+                    raise order_error
         except Exception as e:
             execution_time = time.time() - execution_start
             error_msg = str(e)
             print(f"[EnhancedExecutor] ✗ 订单执行失败: {error_msg}")
+            
+            # 如果订单失败，释放预留的资金
+            if self.capital_manager and trade_amount and not self.dry_run:
+                self.capital_manager.release_capital(agent_name, trade_amount)
             
             # 记录执行结果（失败）
             if self.decision_manager and decision_id:

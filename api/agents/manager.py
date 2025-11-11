@@ -23,7 +23,20 @@ class AgentManager:
         self.agents: List[BaseAgent] = []
         self._stop = False
 
-    def add_agent(self, name: str, system_prompt: str) -> None:
+    def add_agent(self, 
+                  name: str, 
+                  system_prompt: str,
+                  llm_provider: Optional[str] = None,
+                  allocated_capital: Optional[float] = None) -> None:
+        """
+        添加Agent
+        
+        Args:
+            name: Agent名称
+            system_prompt: 系统提示词
+            llm_provider: LLM提供商（deepseek/qwen/minimax），如果为None则使用环境变量
+            allocated_capital: 分配的资金额度，如果为None则不限制
+        """
         agent = BaseAgent(
             name=name,
             bus=self.bus,
@@ -31,6 +44,8 @@ class AgentManager:
             dialog_topic=self.dialog_topic,
             decision_topic=self.decision_topic,
             system_prompt=system_prompt,
+            llm_provider=llm_provider,
+            allocated_capital=allocated_capital
         )
         self.agents.append(agent)
 
