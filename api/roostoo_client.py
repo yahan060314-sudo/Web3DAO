@@ -18,10 +18,15 @@ load_dotenv()
 
 API_KEY = os.getenv("ROOSTOO_API_KEY")
 SECRET_KEY = os.getenv("ROOSTOO_SECRET_KEY")
-# 支持通过环境变量配置API URL，默认使用mock API（用于测试）
-# 生产环境请设置 ROOSTOO_API_URL 为真实API地址
-# 默认使用 mock API: https://mock-api.roostoo.com
-BASE_URL = os.getenv("ROOSTOO_API_URL", "https://mock-api.roostoo.com")
+
+# 从环境变量读取API URL（必须配置）
+ROOSTOO_API_URL = os.getenv("ROOSTOO_API_URL")
+if not ROOSTOO_API_URL:
+    raise ValueError(
+        "ROOSTOO_API_URL未在.env文件中设置。\n"
+        "请在.env文件中设置: ROOSTOO_API_URL=https://mock-api.roostoo.com"
+    )
+BASE_URL = ROOSTOO_API_URL
 
 class RoostooClient:
     """
@@ -46,11 +51,7 @@ class RoostooClient:
         self.session = requests.Session()
         
         # 打印当前使用的API URL（用于确认）
-        if "mock" in self.base_url.lower():
-            print(f"[RoostooClient] ⚠️ 使用模拟API: {self.base_url}")
-            print(f"[RoostooClient] 如需使用真实API，请在.env中设置 ROOSTOO_API_URL")
-        else:
-            print(f"[RoostooClient] ✓ 使用真实API: {self.base_url}")
+        print(f"[RoostooClient] ✓ 使用API: {self.base_url}")
 
     def _get_timestamp(self) -> str:
         """生成13位毫秒级时间戳字符串。"""

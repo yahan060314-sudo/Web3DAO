@@ -2,27 +2,48 @@
 资本管理器 (CapitalManager)
 负责管理初始资金和每个Agent的资金分配
 """
+import os
 import threading
 from typing import Dict, Optional, List
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 
 class CapitalManager:
     """
     资本管理器：
-    - 管理初始资金（默认50000）
+    - 管理初始资金（从API获取或使用.env配置，默认50000）
     - 为每个Agent分配资金额度
     - 跟踪每个Agent的资金使用情况
     - 提供资金查询和分配接口
     """
     
-    def __init__(self, initial_capital: float = 50000.0):
+    def __init__(self, initial_capital: Optional[float] = None):
         """
         初始化资本管理器
         
         Args:
-            initial_capital: 初始资金（默认50000）
+            initial_capital: 初始资金，如果为None则从.env读取或使用默认值50000
         """
+        if initial_capital is None:
+            # 尝试从.env读取
+            env_capital = os.getenv("INITIAL_CAPITAL")
+            if env_capital:
+                try:
+                    initial_capital = float(env_capital)
+                    print(f"[CapitalManager] 从.env读取初始资金: {initial_capital:.2f} USD")
+                except ValueError:
+                    print(f"[CapitalManager] ⚠️ .env中的INITIAL_CAPITAL格式错误，使用默认值50000")
+                    initial_capital = 50000.0
+            else:
+                # 使用默认值
+                initial_capital = 50000.0
+                print(f"[CapitalManager] ⚠️ INITIAL_CAPITAL未在.env中设置，使用默认值: 50000.0 USD")
+                print(f"[CapitalManager] 建议: 在.env文件中设置 INITIAL_CAPITAL=50000")
+        
         self.initial_capital = initial_capital
         self.total_capital = initial_capital
         
