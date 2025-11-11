@@ -207,7 +207,6 @@ ROOSTOO_API_URL=https://mock-api.roostoo.com
 python test_balance_fix.py
 
 # 或运行诊断脚本
-python diagnose_roostoo_connection.py
 ```
 
 ## 📋 测试结果

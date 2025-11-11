@@ -330,15 +330,17 @@ def main():
     logger.info("\n[7] 启动Agents...")
     mgr.start()
     
-    # 10. 创建市场数据采集器
+    # 10. 创建市场数据采集器（自动发现所有交易对，自动优化采集间隔）
     logger.info("[8] 启动市场数据采集器...")
     collector = MarketDataCollector(
         bus=mgr.bus,
         market_topic=mgr.market_topic,
-        pairs=["BTC/USD"],
-        collect_interval=12.0,  # 12秒间隔，符合每分钟最多5次API调用的限制
+        pairs=None,  # None表示自动发现所有可用交易对
+        collect_interval=None,  # None表示根据交易对数量自动计算最优间隔
         collect_balance=True,
-        collect_ticker=True
+        collect_ticker=True,
+        auto_discover_pairs=True,  # 自动发现所有可用交易对
+        batch_size=3  # 每次循环采集3个交易对（避免单次调用太多API）
     )
     collector.start()
     

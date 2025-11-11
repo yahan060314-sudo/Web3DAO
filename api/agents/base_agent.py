@@ -66,6 +66,7 @@ class BaseAgent(threading.Thread):
         # 聚合市场数据
         self.current_tickers: Dict[str, Dict[str, Any]] = {}  # pair -> ticker data
         self.current_balance: Optional[Dict[str, Any]] = None
+        self.current_exchange_info: Optional[Dict[str, Any]] = None  # 交易所信息（包含所有可用交易对）
         self._last_decision_ts: float = 0
 
     def stop(self):
@@ -98,7 +99,7 @@ class BaseAgent(threading.Thread):
         处理接收到的市场数据，根据数据类型进行聚合
         
         Args:
-            msg: 市场数据消息（可能是ticker、balance等）
+            msg: 市场数据消息（可能是ticker、balance、exchange_info等）
         """
         data_type = msg.get("type", "unknown")
         
@@ -110,16 +111,18 @@ class BaseAgent(threading.Thread):
         elif data_type == "balance":
             # 更新余额数据
             self.current_balance = msg
+        elif data_type == "exchange_info":
+            # 更新交易所信息（包含所有可用交易对）
+            self.current_exchange_info = msg
         
-        # 创建综合市场快照
-        ticker = None
-        if self.current_tickers:
-            # 使用第一个交易对的ticker作为主要数据
-            ticker = list(self.current_tickers.values())[0]
+        # 创建综合市场快照（包含所有ticker数据）
+        # 使用tickers字典格式，而不是单个ticker
+        tickers_dict = self.current_tickers if self.current_tickers else None
         
         self.last_market_snapshot = self.formatter.create_market_snapshot(
-            ticker=ticker,
-            balance=self.current_balance
+            tickers=tickers_dict,
+            balance=self.current_balance,
+            exchange_info=getattr(self, 'current_exchange_info', None)
         )
 
     def _handle_dialog(self, msg: Dict[str, Any]) -> None:
