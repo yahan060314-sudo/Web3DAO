@@ -59,56 +59,9 @@ class MarketDataCollector(threading.Thread):
         self._stopped = False
         
         # 缓存上次采集的数据，用于对比变化
-        self._last_tickers: Dict[str, Dict[str, Any]] = {}
+        self._last_tickers: Dict[str, Dict[str, Any]] = {}  # 存储所有交易对的ticker数据
         self._last_balance: Optional[Dict[str, Any]] = None
-        self._last_exchange_info: Optional[Dict[str, Any]] = None
-        
-        # 分批采集相关
-        self._current_batch_index = 0  # 当前批次索引
-        
-        # 初始化交易对列表
-        if pairs is not None:
-            self.pairs = pairs
-        elif auto_discover_pairs:
-            # 自动获取所有可用交易对
-            self.pairs = self._discover_available_pairs()
-            print(f"[MarketDataCollector] 自动发现 {len(self.pairs)} 个可用交易对: {', '.join(self.pairs[:10])}{'...' if len(self.pairs) > 10 else ''}")
-        else:
-            self.pairs = ["BTC/USD"]
-            print(f"[MarketDataCollector] 使用默认交易对: BTC/USD")
-        
-        # 自动计算采集间隔（如果未指定）
-        if collect_interval is None:
-            # 根据交易对数量和API限频自动计算
-            # API限频：每分钟最多3次（从 utils/rate_limiter.py 读取）
-            from utils.rate_limiter import API_RATE_LIMITER
-            max_calls_per_minute = API_RATE_LIMITER.max_calls
-            time_window = API_RATE_LIMITER.time_window
-            
-            # 每次循环需要的API调用次数
-            calls_per_cycle = self.batch_size + (1 if self.collect_balance else 0)
-            
-            # 计算理论最小间隔：确保每分钟的总调用次数不超过限制
-            # 公式：interval = (time_window / max_calls_per_minute) * calls_per_cycle
-            # 但考虑到频率限制器会自动控制等待，我们可以使用更宽松的计算
-            # 使用安全系数1.2，确保有缓冲
-            theoretical_min_interval = (time_window / max_calls_per_minute) * calls_per_cycle * 1.2
-            
-            # 设置最小间隔为20秒（避免过于频繁），最大间隔为60秒（避免数据过旧）
-            self.collect_interval = max(20.0, min(60.0, theoretical_min_interval))
-            
-            # 计算完整轮换一次需要的时间
-            cycles_per_rotation = (len(self.pairs) + self.batch_size - 1) // self.batch_size
-            rotation_time = cycles_per_rotation * self.collect_interval
-            
-            print(f"[MarketDataCollector] 自动计算采集间隔: {self.collect_interval:.1f}秒")
-            print(f"  - 交易对数量: {len(self.pairs)}")
-            print(f"  - 批次大小: {self.batch_size} 个/循环")
-            print(f"  - 每次循环API调用: {calls_per_cycle} 次 (ticker: {self.batch_size}, balance: {1 if self.collect_balance else 0})")
-            print(f"  - API限频: {max_calls_per_minute}次/{time_window:.0f}秒")
-            print(f"  - 完整轮换: {cycles_per_rotation} 个循环 ({rotation_time:.1f}秒)")
-        else:
-            self.collect_interval = collect_interval
+        self._last_exchange_info: Optional[Dict[str, Any]] = None  # 存储交易所信息（包含所有可用交易对）
     
     def stop(self):
         """停止采集器"""
@@ -143,30 +96,21 @@ class MarketDataCollector(threading.Thread):
     
     def run(self):
         """主循环：定期采集数据并发布"""
-        print(f"[MarketDataCollector] Started. Collecting data every {self.collect_interval:.1f}s")
-        print(f"[MarketDataCollector] Monitoring {len(self.pairs)} trading pairs")
-        print(f"[MarketDataCollector] Batch size: {self.batch_size} pairs per cycle")
+        print(f"[MarketDataCollector] Started. Collecting data every {self.collect_interval}s")
+        print(f"[MarketDataCollector] Will collect data for {len(self.pairs)} trading pairs")
         
-        # 计算完整轮换一次需要多少循环
-        if self.pairs:
-            cycles_per_rotation = (len(self.pairs) + self.batch_size - 1) // self.batch_size
-            rotation_time = cycles_per_rotation * self.collect_interval
-            print(f"[MarketDataCollector] Full rotation: {cycles_per_rotation} cycles ({rotation_time:.1f}s)")
-        
-        # 首次采集交易所信息
-        if self.auto_discover_pairs:
-            self._collect_exchange_info()
+        # 初始化时获取一次交易所信息（包含所有可用交易对）
+        try:
+            raw_exchange_info = self.client.get_exchange_info()
+            self._last_exchange_info = self.formatter.format_exchange_info(raw_exchange_info)
+            print(f"[MarketDataCollector] Loaded exchange info with {len(self._last_exchange_info.get('trade_pairs', []))} available pairs")
+        except Exception as e:
+            print(f"[MarketDataCollector] Warning: Failed to load exchange info: {e}")
         
         iteration = 0
         while not self._stopped:
             try:
-                # 定期更新交易所信息（每20次循环更新一次，避免频繁调用）
-                # 如果交易对数量很多，可能需要更频繁地更新
-                exchange_info_interval = max(20, len(self.pairs) // self.batch_size * 2)
-                if self.auto_discover_pairs and iteration % exchange_info_interval == 0:
-                    self._collect_exchange_info()
-                
-                # 采集ticker数据（分批采集）
+                # 采集ticker数据（所有配置的交易对）
                 if self.collect_ticker:
                     self._collect_tickers()
                 
@@ -300,13 +244,26 @@ class MarketDataCollector(threading.Thread):
         获取最新的市场快照（包含所有ticker和余额）
         
         Returns:
-            综合市场快照
+            综合市场快照，包含：
+            - tickers: 所有交易对的ticker数据（字典，key为交易对名称）
+            - balance: 账户余额数据
+            - exchange_info: 交易所信息（包含所有可用交易对）
         """
-        # 传递所有ticker数据（作为字典）而不是单个ticker
-        tickers_dict = self._last_tickers if self._last_tickers else None
-        return self.formatter.create_market_snapshot(
-            tickers=tickers_dict,
+        # 构建包含所有ticker数据的快照
+        # 为了向后兼容，如果只有一个ticker，也保留ticker字段（单个）
+        # 同时添加tickers字段（多个）
+        snapshot = self.formatter.create_market_snapshot(
+            ticker=None,  # 不再使用单个ticker，改用tickers字典
             balance=self._last_balance,
             exchange_info=self._last_exchange_info
         )
+        
+        # 添加所有ticker数据到快照
+        if self._last_tickers:
+            snapshot["tickers"] = self._last_tickers
+            # 为了向后兼容，如果只有一个ticker，也设置ticker字段
+            if len(self._last_tickers) == 1:
+                snapshot["ticker"] = list(self._last_tickers.values())[0]
+        
+        return snapshot
 

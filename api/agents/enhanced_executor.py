@@ -313,6 +313,25 @@ class EnhancedTradeExecutor(threading.Thread):
             else:
                 trade_amount = None
         
+        # 验证和调整仓位大小（根据风险等级和信心度）
+        if trade_amount and self.capital_manager:
+            adjusted_trade_amount = self._validate_and_adjust_position_size(
+                trade_amount=trade_amount,
+                agent_name=agent_name,
+                confidence=parsed_decision.get("json_data", {}).get("confidence"),
+                risk_level="moderate"  # 默认使用moderate，可以从decision消息中获取
+            )
+            if adjusted_trade_amount != trade_amount:
+                print(f"[EnhancedExecutor] ⚠️ 仓位大小已调整: {trade_amount:.2f} → {adjusted_trade_amount:.2f} USD")
+                # 重新计算quantity
+                if price:
+                    quantity = adjusted_trade_amount / price
+                elif snapshot_for_price and snapshot_for_price.get("ticker"):
+                    current_price = snapshot_for_price["ticker"].get("price")
+                    if current_price:
+                        quantity = adjusted_trade_amount / current_price
+                trade_amount = adjusted_trade_amount
+        
         # 检查资金额度（如果启用了资本管理器）
         if self.capital_manager and trade_amount:
             allocated_capital = self.capital_manager.get_allocated_capital(agent_name)
@@ -624,50 +643,107 @@ class EnhancedTradeExecutor(threading.Thread):
         return {"side": side, "quantity": quantity, "price": price, "pair": pair}
     
     def _convert_symbol_to_pair(self, symbol: str) -> str:
+        """转换symbol格式：BTCUSDT -> BTC/USD"""
+        symbol = symbol.replace("USDT", "").replace("USD", "").replace("/", "")
+        if symbol:
+            return f"{symbol}/USD"
+        return self.default_pair
+    
+    def _validate_and_adjust_position_size(
+        self,
+        trade_amount: float,
+        agent_name: str,
+        confidence: Optional[int] = None,
+        risk_level: str = "moderate"
+    ) -> float:
         """
-        转换symbol格式：支持所有虚拟货币币种
-        - BTCUSDT -> BTC/USD
-        - ETHUSDT -> ETH/USD
-        - 支持所有Roostoo API中的交易对
+        验证和调整仓位大小，根据风险等级、信心度和可用资金
+        
+        Args:
+            trade_amount: 原始交易金额（USD）
+            agent_name: Agent名称
+            confidence: 信心度（0-100）
+            risk_level: 风险等级（conservative/moderate/aggressive）
+            
+        Returns:
+            调整后的交易金额（USD）
         """
-        if not symbol:
-            return self.default_pair
+        if not self.capital_manager:
+            return trade_amount
         
-        # 清理symbol格式
-        symbol_clean = symbol.replace("USDT", "").replace("USD", "").replace("/", "").upper()
+        from config.config import (
+            BASE_POSITION_SIZE_RATIO_CONSERVATIVE,
+            BASE_POSITION_SIZE_RATIO_MODERATE,
+            BASE_POSITION_SIZE_RATIO_AGGRESSIVE,
+            MAX_POSITION_SIZE_RATIO_CONSERVATIVE,
+            MAX_POSITION_SIZE_RATIO_MODERATE,
+            MAX_POSITION_SIZE_RATIO_AGGRESSIVE,
+            MIN_POSITION_SIZE_USD,
+            ABSOLUTE_MAX_POSITION_SIZE_RATIO,
+            ABSOLUTE_MAX_POSITION_SIZE_USD,
+            CONFIDENCE_THRESHOLD_CONSERVATIVE,
+            CONFIDENCE_THRESHOLD_MODERATE,
+            CONFIDENCE_THRESHOLD_AGGRESSIVE,
+            CONFIDENCE_POSITION_MULTIPLIER_CONSERVATIVE,
+            CONFIDENCE_POSITION_MULTIPLIER_MODERATE,
+            CONFIDENCE_POSITION_MULTIPLIER_AGGRESSIVE
+        )
         
-        if not symbol_clean:
-            return self.default_pair
+        # 获取可用资金
+        available_capital = self.capital_manager.get_available_capital(agent_name)
+        if available_capital <= 0:
+            return min(trade_amount, MIN_POSITION_SIZE_USD)
         
-        # 尝试从Roostoo API获取所有可用交易对
-        try:
-            if self.client:
-                exchange_info = self.client.get_exchange_info()
-                trade_pairs = exchange_info.get('data', {}).get('TradePairs', {})
-                if not trade_pairs:
-                    trade_pairs = exchange_info.get('TradePairs', {})
-                
-                # 查找匹配的交易对
-                # 1. 精确匹配：symbol/USD
-                target_pair = f"{symbol_clean}/USD"
-                if target_pair in trade_pairs:
-                    return target_pair
-                
-                # 2. 查找所有包含该币种的交易对
-                for pair in trade_pairs.keys():
-                    # 提取交易对中的基础币种（如 BTC/USD -> BTC）
-                    base_currency = pair.split('/')[0] if '/' in pair else pair.split('-')[0]
-                    if base_currency.upper() == symbol_clean:
-                        return pair
-                
-                # 3. 如果找不到，尝试构造标准格式
-                print(f"[EnhancedExecutor] ⚠️ 未找到 {symbol_clean} 的交易对，使用构造格式: {target_pair}")
-                return target_pair
-        except Exception as e:
-            print(f"[EnhancedExecutor] ⚠️ 获取交易对列表失败: {e}，使用默认格式")
+        # 根据风险等级选择参数
+        if risk_level == "conservative":
+            base_ratio = BASE_POSITION_SIZE_RATIO_CONSERVATIVE
+            max_ratio = MAX_POSITION_SIZE_RATIO_CONSERVATIVE
+            confidence_threshold = CONFIDENCE_THRESHOLD_CONSERVATIVE
+            confidence_multiplier = CONFIDENCE_POSITION_MULTIPLIER_CONSERVATIVE
+        elif risk_level == "aggressive":
+            base_ratio = BASE_POSITION_SIZE_RATIO_AGGRESSIVE
+            max_ratio = MAX_POSITION_SIZE_RATIO_AGGRESSIVE
+            confidence_threshold = CONFIDENCE_THRESHOLD_AGGRESSIVE
+            confidence_multiplier = CONFIDENCE_POSITION_MULTIPLIER_AGGRESSIVE
+        else:  # moderate
+            base_ratio = BASE_POSITION_SIZE_RATIO_MODERATE
+            max_ratio = MAX_POSITION_SIZE_RATIO_MODERATE
+            confidence_threshold = CONFIDENCE_THRESHOLD_MODERATE
+            confidence_multiplier = CONFIDENCE_POSITION_MULTIPLIER_MODERATE
         
-        # 回退：使用标准格式
-        return f"{symbol_clean}/USD"
+        # 计算基础仓位和最大仓位
+        base_position = available_capital * base_ratio
+        max_position = available_capital * max_ratio
+        
+        # 根据信心度调整仓位
+        if confidence is not None and confidence > 0:
+            # 计算信心度调整系数
+            confidence_diff = confidence - confidence_threshold
+            confidence_adjustment = 1.0 + (confidence_diff / 100.0) * confidence_multiplier
+            # 限制调整范围在0.5到1.5之间
+            confidence_adjustment = max(0.5, min(1.5, confidence_adjustment))
+            adjusted_base = base_position * confidence_adjustment
+        else:
+            adjusted_base = base_position
+        
+        # 确定目标仓位（在基础仓位和最大仓位之间）
+        target_position = min(max(adjusted_base, base_position), max_position)
+        
+        # 调整交易金额
+        adjusted_amount = min(trade_amount, target_position)
+        
+        # 应用绝对上限（无论信心度多高，都不超过此限制）
+        absolute_max_by_ratio = available_capital * ABSOLUTE_MAX_POSITION_SIZE_RATIO
+        absolute_max = min(absolute_max_by_ratio, ABSOLUTE_MAX_POSITION_SIZE_USD)
+        adjusted_amount = min(adjusted_amount, absolute_max)
+        
+        # 确保不低于最小仓位
+        adjusted_amount = max(adjusted_amount, MIN_POSITION_SIZE_USD)
+        
+        # 确保不超过可用资金
+        adjusted_amount = min(adjusted_amount, available_capital * 0.95)  # 保留5%缓冲
+        
+        return adjusted_amount
 
 
 if __name__ == "__main__":
