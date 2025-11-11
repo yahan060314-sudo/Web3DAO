@@ -36,21 +36,42 @@ class RoostooClient:
             secret_key (str): 您的Roostoo Secret Key。
             base_url (str, optional): API基础URL。如果为None，使用环境变量ROOSTOO_API_URL或默认值。
         """
-        if not api_key or not secret_key:
-            raise ValueError("API Key和Secret Key不能为空。请检查您的.env文件或初始化参数。")
-        
         # 支持通过参数或环境变量配置base_url
         self.base_url = base_url or BASE_URL
-        self.api_key = api_key
-        self.secret_key = secret_key
-        self.session = requests.Session()
         
-        # 打印当前使用的API URL（用于确认）
-        if "mock" in self.base_url.lower():
+        # 检查是否是Mock API
+        is_mock_api = "mock" in self.base_url.lower()
+        
+        # 检查是否提供了真实的API凭证
+        has_real_credentials = api_key and secret_key and api_key != "mock_api_key" and secret_key != "mock_secret_key"
+        
+        if is_mock_api:
             print(f"[RoostooClient] ⚠️ 使用模拟API: {self.base_url}")
-            print(f"[RoostooClient] 如需使用真实API，请在.env中设置 ROOSTOO_API_URL")
+            
+            if has_real_credentials:
+                # 如果提供了真实的API凭证，即使在Mock API模式下也使用真实凭证
+                # 这样可以让Mock API的余额接口等需要认证的端点正常工作
+                self.api_key = api_key
+                self.secret_key = secret_key
+                print(f"[RoostooClient] ✓ 使用真实API凭证（Mock API模式下，某些接口需要有效凭证）")
+            else:
+                # 如果没有提供真实的API凭证，使用测试凭证
+                # 这适用于只需要测试公开接口（如服务器时间、交易所信息）的场景
+                self.api_key = api_key or "mock_api_key"
+                self.secret_key = secret_key or "mock_secret_key"
+                print(f"[RoostooClient] ⚠️ 使用测试凭证（Mock API模式下，仅公开接口可用）")
+                print(f"[RoostooClient] 💡 提示: 如需测试余额等需要认证的接口，请在.env中配置真实的API凭证")
+            
+            print(f"[RoostooClient] 如需使用真实API，请在.env中设置 ROOSTOO_API_URL=https://api.roostoo.com")
         else:
+            # 真实API必须提供有效的凭证
+            if not api_key or not secret_key:
+                raise ValueError("API Key和Secret Key不能为空。请检查您的.env文件或初始化参数。")
+            self.api_key = api_key
+            self.secret_key = secret_key
             print(f"[RoostooClient] ✓ 使用真实API: {self.base_url}")
+        
+        self.session = requests.Session()
 
     def _get_timestamp(self) -> str:
         """生成13位毫秒级时间戳字符串。"""

@@ -108,14 +108,19 @@ def test_roostoo_client():
     api_key = os.getenv("ROOSTOO_API_KEY")
     secret_key = os.getenv("ROOSTOO_SECRET_KEY")
     api_url = os.getenv("ROOSTOO_API_URL", "https://mock-api.roostoo.com")
+    is_mock_api = "mock" in api_url.lower()
     
     print(f"API URL: {api_url}")
     print(f"API Key: {'✓ 已配置' if api_key else '✗ 未配置'}")
     print(f"Secret Key: {'✓ 已配置' if secret_key else '✗ 未配置'}")
     
-    if not api_key or not secret_key:
+    # Mock API 模式下可以不提供凭证
+    if not is_mock_api and (not api_key or not secret_key):
         print("\n   ✗ API凭证未配置，请检查.env文件")
+        print("   提示: Mock API 模式下可以不提供凭证，但真实API需要有效的凭证")
         return False
+    elif is_mock_api and (not api_key or not secret_key):
+        print("\n   ⚠️ API凭证未配置（Mock API模式下允许，将使用测试凭证）")
     
     try:
         # 创建客户端
