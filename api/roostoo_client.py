@@ -43,7 +43,21 @@ class RoostooClient:
         is_mock_api = "mock" in self.base_url.lower()
         
         # 检查是否提供了真实的API凭证
-        has_real_credentials = api_key and secret_key and api_key != "mock_api_key" and secret_key != "mock_secret_key"
+        # 排除占位符值（如 "your_roostoo_api_key_here"）
+        is_placeholder = (
+            (api_key and ("your_" in api_key.lower() or "placeholder" in api_key.lower() or "here" in api_key.lower() or len(api_key) < 10)) or
+            (secret_key and ("your_" in secret_key.lower() or "placeholder" in secret_key.lower() or "here" in secret_key.lower() or len(secret_key) < 10))
+        )
+        
+        has_real_credentials = (
+            api_key and 
+            secret_key and 
+            api_key.strip() != "" and 
+            secret_key.strip() != "" and
+            api_key != "mock_api_key" and 
+            secret_key != "mock_secret_key" and
+            not is_placeholder  # 排除占位符
+        )
         
         if is_mock_api:
             print(f"[RoostooClient] ⚠️ 使用模拟API: {self.base_url}")
@@ -59,8 +73,15 @@ class RoostooClient:
                 # 这适用于只需要测试公开接口（如服务器时间、交易所信息）的场景
                 self.api_key = api_key or "mock_api_key"
                 self.secret_key = secret_key or "mock_secret_key"
-                print(f"[RoostooClient] ⚠️ 使用测试凭证（Mock API模式下，仅公开接口可用）")
-                print(f"[RoostooClient] 💡 提示: 如需测试余额等需要认证的接口，请在.env中配置真实的API凭证")
+                
+                # 检查是否是占位符
+                if is_placeholder:
+                    print(f"[RoostooClient] ⚠️ 检测到占位符值，使用测试凭证")
+                    print(f"[RoostooClient] 💡 提示: 请在.env文件中填入真实的API凭证（不是占位符）")
+                    print(f"[RoostooClient] 💡 当前使用的是占位符，余额接口将无法使用")
+                else:
+                    print(f"[RoostooClient] ⚠️ 使用测试凭证（Mock API模式下，仅公开接口可用）")
+                    print(f"[RoostooClient] 💡 提示: 如需测试余额等需要认证的接口，请在.env中配置真实的API凭证")
             
             print(f"[RoostooClient] 如需使用真实API，请在.env中设置 ROOSTOO_API_URL=https://api.roostoo.com")
         else:
@@ -189,9 +210,31 @@ class RoostooClient:
                     ) from e
             except requests.exceptions.HTTPError as e:
                 # HTTP错误（4xx, 5xx）通常不需要重试，直接抛出
-                print(f"[RoostooClient] ✗ HTTP错误: {e.response.status_code} - {e.response.reason}")
+                status_code = e.response.status_code
+                response_text = e.response.text[:500]
+                
+                print(f"[RoostooClient] ✗ HTTP错误: {status_code} - {e.response.reason}")
                 print(f"    URL: {e.response.url}")
-                print(f"    响应内容: {e.response.text[:500]}")
+                print(f"    响应内容: {response_text}")
+                
+                # 针对401错误提供更详细的诊断信息
+                if status_code == 401:
+                    error_msg = (
+                        f"\n[RoostooClient] 认证失败 (401 Unauthorized)\n"
+                        f"可能的原因:\n"
+                        f"  1. API Key 或 Secret Key 无效\n"
+                        f"  2. 使用了占位符值（如 'your_roostoo_api_key_here'）\n"
+                        f"  3. API凭证已过期或 revoked\n"
+                        f"  4. Mock API 需要有效的API凭证\n"
+                        f"建议:\n"
+                        f"  1. 检查 .env 文件中的 ROOSTOO_API_KEY 和 ROOSTOO_SECRET_KEY\n"
+                        f"  2. 确保使用的是真实的API凭证（不是占位符）\n"
+                        f"  3. 验证API凭证是否有效\n"
+                        f"  4. 如果使用Mock API，某些接口可能需要有效的凭证\n"
+                        f"  5. 当前使用的API Key: {self.api_key[:15] + '...' if len(self.api_key) > 15 else self.api_key}"
+                    )
+                    print(error_msg)
+                
                 raise
             except requests.exceptions.RequestException as e:
                 last_exception = e
@@ -229,10 +272,16 @@ class RoostooClient:
 
     def get_balance(self, timeout: Optional[float] = None) -> Dict:
         """[RCL_TopLevelCheck] 获取账户余额信息"""
-        headers, _ = self._sign_request({})
+        # 生成签名：timestamp参数需要参与签名
+        timestamp = self._get_timestamp()
+        payload = {'timestamp': timestamp}
+        headers, _ = self._sign_request(payload)
+        
         # 对于GET请求，timestamp需要作为URL参数
-        params = {'timestamp': headers.pop('timestamp', self._get_timestamp())} # 从payload中提取timestamp
-        return self._request('GET', '/v3/balance', headers=headers, params={'timestamp': self._get_timestamp()}, timeout=timeout)
+        # 注意：headers中不包含timestamp（它已经在_sign_request中用于生成签名）
+        params = {'timestamp': timestamp}
+        
+        return self._request('GET', '/v3/balance', headers=headers, params=params, timeout=timeout)
 
     def get_pending_count(self) -> Dict:
         """[RCL_TopLevelCheck] 获取挂单数量"""
