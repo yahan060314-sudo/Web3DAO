@@ -251,26 +251,54 @@ class DataFormatter:
         将市场快照格式化为LLM可读的文本格式
         
         Args:
-            snapshot: 市场快照数据
+            snapshot: 市场快照数据（可能包含单个ticker或多个tickers）
             
         Returns:
             格式化的文本描述
         """
         lines = []
         
-        if snapshot.get("ticker"):
-            ticker = snapshot["ticker"]
-            lines.append(f"📊 Market Data ({ticker.get('pair', 'N/A')}):")
-            if "price" in ticker:
-                lines.append(f"  Current Price: ${ticker['price']:.2f}")
-            if "change_24h" in ticker:
-                change = ticker["change_24h"]
-                sign = "+" if change >= 0 else ""
-                lines.append(f"  24h Change: {sign}{change:.2f}%")
-            if "volume_24h" in ticker:
-                lines.append(f"  24h Volume: {ticker['volume_24h']:.2f}")
-            if "high_24h" in ticker and "low_24h" in ticker:
-                lines.append(f"  24h Range: ${ticker['low_24h']:.2f} - ${ticker['high_24h']:.2f}")
+        # 支持多个ticker数据（如果snapshot包含tickers字典）
+        tickers_to_format = []
+        if snapshot.get("tickers") and isinstance(snapshot["tickers"], dict):
+            # 如果有多个tickers，格式化所有
+            tickers_to_format = list(snapshot["tickers"].values())
+        elif snapshot.get("ticker"):
+            # 单个ticker（保持向后兼容）
+            tickers_to_format = [snapshot["ticker"]]
+        
+        # 格式化所有ticker数据
+        if tickers_to_format:
+            if len(tickers_to_format) == 1:
+                # 单个币种，保持原有格式
+                ticker = tickers_to_format[0]
+                lines.append(f"📊 Market Data ({ticker.get('pair', 'N/A')}):")
+                if "price" in ticker:
+                    lines.append(f"  Current Price: ${ticker['price']:.2f}")
+                if "change_24h" in ticker:
+                    change = ticker["change_24h"]
+                    sign = "+" if change >= 0 else ""
+                    lines.append(f"  24h Change: {sign}{change:.2f}%")
+                if "volume_24h" in ticker:
+                    lines.append(f"  24h Volume: {ticker['volume_24h']:.2f}")
+                if "high_24h" in ticker and "low_24h" in ticker:
+                    lines.append(f"  24h Range: ${ticker['low_24h']:.2f} - ${ticker['high_24h']:.2f}")
+            else:
+                # 多个币种，格式化所有
+                lines.append(f"📊 Market Data (Multiple Currencies - {len(tickers_to_format)} pairs):")
+                for ticker in tickers_to_format:
+                    pair = ticker.get('pair', 'N/A')
+                    lines.append(f"\n  {pair}:")
+                    if "price" in ticker:
+                        lines.append(f"    Current Price: ${ticker['price']:.2f}")
+                    if "change_24h" in ticker:
+                        change = ticker["change_24h"]
+                        sign = "+" if change >= 0 else ""
+                        lines.append(f"    24h Change: {sign}{change:.2f}%")
+                    if "volume_24h" in ticker:
+                        lines.append(f"    24h Volume: {ticker['volume_24h']:.2f}")
+                    if "high_24h" in ticker and "low_24h" in ticker:
+                        lines.append(f"    24h Range: ${ticker['low_24h']:.2f} - ${ticker['high_24h']:.2f}")
         
         if snapshot.get("balance"):
             balance = snapshot["balance"]
@@ -284,6 +312,17 @@ class DataFormatter:
                 for currency, amounts in balance["currencies"].items():
                     if amounts.get("total", 0) > 0:
                         lines.append(f"    {currency}: {amounts['total']:.4f} (Available: {amounts['available']:.4f})")
+        
+        # 如果有exchange_info，显示可用交易对
+        if snapshot.get("exchange_info") and snapshot["exchange_info"].get("trade_pairs"):
+            trade_pairs = snapshot["exchange_info"]["trade_pairs"]
+            if trade_pairs:
+                lines.append(f"\n📈 Available Trading Pairs ({len(trade_pairs)} total):")
+                # 只显示前10个，避免prompt过长
+                display_pairs = trade_pairs[:10]
+                lines.append(f"  {', '.join(display_pairs)}")
+                if len(trade_pairs) > 10:
+                    lines.append(f"  ... and {len(trade_pairs) - 10} more pairs available")
         
         return "\n".join(lines) if lines else "No market data available"
 

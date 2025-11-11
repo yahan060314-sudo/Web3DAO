@@ -164,7 +164,49 @@ Example valid outputs:
 ✗ I recommend buying (NOT ACCEPTED - must be JSON)
 """
         
-        base_prompt += decision_philosophy + json_format_section
+        # 添加币种选择指导部分
+        currency_selection_section = """
+CRITICAL - Currency Selection (Multi-Currency Trading):
+You have access to multiple cryptocurrencies through the API. You should analyze ALL available currencies and select the best trading opportunity.
+
+Currency Selection Guidelines:
+1. **Analyze Multiple Currencies**: Don't limit yourself to just BTC. Consider all available cryptocurrencies (BTC, ETH, SOL, BNB, DOGE, etc.)
+2. **Compare Opportunities**: When making decisions, compare:
+   - Price trends and momentum across different currencies
+   - 24h volume and liquidity
+   - 24h price change percentage
+   - Technical indicators (if available)
+3. **Select Best Opportunity**: Choose the currency with:
+   - Strongest technical signals
+   - Best risk-reward ratio
+   - Highest confidence level
+   - Adequate liquidity for your position size
+4. **Symbol Format**: Use standard symbol format in your JSON decision:
+   - BTC → "BTCUSDT" or "BTCUSD"
+   - ETH → "ETHUSDT" or "ETHUSD"
+   - SOL → "SOLUSDT" or "SOLUSD"
+   - BNB → "BNBUSDT" or "BNBUSD"
+   - DOGE → "DOGEUSDT" or "DOGEUSD"
+   - Other currencies follow the same pattern: {CURRENCY}USDT or {CURRENCY}USD
+5. **Multi-Currency Analysis**: When market data includes multiple currencies:
+   - Evaluate each currency's current price, 24h change, and volume
+   - Identify which currency shows the strongest trading signal
+   - Consider diversification: don't always trade the same currency
+   - Balance between high-volatility opportunities and stable assets
+6. **Currency Selection in Reasoning**: Always explain in your reasoning field:
+   - Why you chose this specific currency over others
+   - What factors made this currency the best opportunity
+   - How this currency compares to alternatives
+
+Example multi-currency analysis:
+- If BTC shows +2% 24h change with high volume, and ETH shows -1% with low volume, BTC might be a better opportunity
+- If multiple currencies show positive signals, choose the one with strongest momentum and best risk-reward
+- Consider market correlation: if BTC is bullish, altcoins might follow (but not always)
+
+Remember: The API provides access to multiple currencies. Use this advantage to find the best trading opportunities, not just default to BTC.
+"""
+        
+        base_prompt += decision_philosophy + json_format_section + currency_selection_section
         
         return base_prompt
     
@@ -188,10 +230,33 @@ Example valid outputs:
         # 格式化市场数据为文本
         market_text = self.formatter.format_for_llm(market_snapshot)
         
+        # 检查是否有多个币种的数据
+        multi_currency_note = ""
+        if market_snapshot:
+            # 检查是否有多个ticker（通过检查market_snapshot中是否包含多个币种信息）
+            # 如果market_snapshot包含exchange_info，说明有多个可用币种
+            if market_snapshot.get("exchange_info") and market_snapshot["exchange_info"].get("trade_pairs"):
+                available_pairs = market_snapshot["exchange_info"]["trade_pairs"]
+                if len(available_pairs) > 1:
+                    multi_currency_note = f"""
+IMPORTANT - Multiple Currencies Available:
+The API provides access to {len(available_pairs)} trading pairs. You should analyze and compare opportunities across these currencies:
+{', '.join(available_pairs[:10])}{'...' if len(available_pairs) > 10 else ''}
+
+Don't limit your analysis to just one currency. Compare all available options and select the best trading opportunity based on:
+- Price momentum and trends
+- Volume and liquidity
+- Risk-reward ratios
+- Technical indicators
+
+Choose the currency that offers the best opportunity, not just the default one.
+
+"""
+        
         prompt = f"""Analyze the current market situation and make a trading decision.
 
 {market_text}
-
+{multi_currency_note}
 """
         
         if additional_context:
