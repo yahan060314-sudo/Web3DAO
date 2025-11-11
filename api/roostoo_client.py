@@ -48,8 +48,8 @@ class RoostooClient:
         为RCL_TopLevelCheck请求生成签名和头部。
         
         Args:
-            payload (Dict[str, Any]): 请求的业务参数。
-
+            params (Dict[str, Any]): 请求参数字典
+            
         Returns:
             Tuple[Dict[str, str], Dict[str, Any], str]: 
             一个元组，包含 (
@@ -184,10 +184,12 @@ class RoostooClient:
         """
         [RCL_TopLevelCheck] 下新订单（市价或限价） (实现正确，无需修改)
         """
+        # 创建payload字典（与官方示例完全一致）
         payload = {
-            'pair': pair,
-            'side': side.upper(),
-            'quantity': str(quantity),
+            "timestamp": int(time.time() * 1000),
+            "pair": pair,
+            "side": side.upper(),
+            "quantity": quantity,
         }
         if price is not None:
             payload['type'] = 'LIMIT'
@@ -199,7 +201,14 @@ class RoostooClient:
         headers, _, data_string = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
-        return self._request('POST', '/v3/place_order', headers=headers, data=data_string)
+        # 构建请求头（与官方示例完全一致）
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature
+        }
+        
+        # 使用data参数传递payload字典，requests会自动转换为form-urlencoded格式（与官方示例完全一致）
+        return self._request('POST', '/v3/place_order', headers=headers, data=payload)
 
     def query_order(self, order_id: Optional[str] = None, pair: Optional[str] = None) -> Dict:
         """[RCL_TopLevelCheck] 查询订单 (实现正确，无需修改)"""
@@ -212,7 +221,17 @@ class RoostooClient:
         headers, _, data_string = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
-        return self._request('POST', '/v3/query_order', headers=headers, data=data_string)
+        # 生成签名（与官方示例完全一致）
+        signature = self.generate_signature(payload)
+        
+        # 构建请求头（与官方示例完全一致）
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature
+        }
+        
+        # 使用data参数传递payload字典，requests会自动转换为form-urlencoded格式（与官方示例完全一致）
+        return self._request('POST', '/v3/query_order', headers=headers, data=payload)
 
     def cancel_order(self, order_id: Optional[str] = None, pair: Optional[str] = None) -> Dict:
         """[RCL_TopLevelCheck] 取消订单 (实现正确，无需修改)"""
@@ -225,4 +244,14 @@ class RoostooClient:
         headers, _, data_string = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
-        return self._request('POST', '/v3/cancel_order', headers=headers, data=data_string)
+        # 生成签名（与官方示例完全一致）
+        signature = self.generate_signature(payload)
+        
+        # 构建请求头（与官方示例完全一致）
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature
+        }
+        
+        # 使用data参数传递payload字典，requests会自动转换为form-urlencoded格式（与官方示例完全一致）
+        return self._request('POST', '/v3/cancel_order', headers=headers, data=payload)
