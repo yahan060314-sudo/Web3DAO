@@ -42,6 +42,7 @@ class TradeExecutor(threading.Thread):
         self.default_pair = default_pair
         self._stopped = False
         self._last_order_ts: Optional[float] = None
+        self._first_decision_processed = False  # 标记是否已处理第一个决策
 
     def stop(self):
         self._stopped = True
