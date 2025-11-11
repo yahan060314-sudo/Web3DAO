@@ -395,8 +395,15 @@ def main():
     
     # 10. 创建市场数据采集器
     logger.info("[8] 启动市场数据采集器...")
-    all_usd_pairs = load_all_tradeable_usd_pairs()
-    logger.info(f"[MarketDataCollector] 可交易USD交易对数量: {len(all_usd_pairs)}")
+    # 支持通过环境变量覆盖交易对列表：TRADE_PAIRS=BTC/USD,ETH/USD,SOL/USD
+    env_pairs = os.getenv("TRADE_PAIRS", "").strip()
+    all_usd_pairs = []
+    if env_pairs:
+        all_usd_pairs = [p.strip().upper() for p in env_pairs.split(",") if p.strip()]
+        logger.info(f"[MarketDataCollector] 使用环境变量 TRADE_PAIRS 覆盖，数量: {len(all_usd_pairs)}")
+    else:
+        all_usd_pairs = load_all_tradeable_usd_pairs()
+        logger.info(f"[MarketDataCollector] 可交易USD交易对数量: {len(all_usd_pairs)}")
     collector = MarketDataCollector(
         bus=mgr.bus,
         market_topic=mgr.market_topic,
