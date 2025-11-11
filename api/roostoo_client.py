@@ -1,11 +1,10 @@
 # roostoo_client.py
-
 import os
 import time
 import hmac
 import hashlib
 import requests
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,16 +28,10 @@ if not ROOSTOO_API_URL:
 BASE_URL = ROOSTOO_API_URL
 
 class RoostooClient:
-    """
-    Roostoo API的Python客户端，完全按照官方文档实现认证逻辑。
-    """
-    def __init__(self, api_key: str = API_KEY, secret_key: str = SECRET_KEY, base_url: str = None):
-        if not api_key or not secret_key:
-            raise ValueError("API Key和Secret Key不能为空。请检查您的.env文件或初始化参数。")
-        
-        self.base_url = base_url or BASE_URL
-        self.api_key = api_key
-        self.secret_key = secret_key
+    def __init__(self, api_key: str = None, secret_key: str = None, base_url: str = None):
+        self.api_key = api_key or os.getenv("ROOSTOO_API_KEY")
+        self.secret_key = secret_key or os.getenv("ROOSTOO_SECRET_KEY")
+        self.base_url = base_url or os.getenv("ROOSTOO_API_URL", "https://mock-api.roostoo.com")
         self.session = requests.Session()
         
         print(f"[RoostooClient] ✓ 使用API: {self.base_url}")
@@ -76,7 +69,7 @@ class RoostooClient:
         # 4. 使用HMAC-SHA256算法生成签名（与官方示例完全一致）
         signature = hmac.new(
             self.secret_key.encode('utf-8'),
-            query_string.encode('utf-8'),
+            param_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
 
@@ -163,23 +156,29 @@ class RoostooClient:
             raise last_exception
 
     # --- Public API Endpoints ---
-
-    def check_server_time(self, timeout: Optional[float] = None) -> Dict:
+    
+    def check_server_time(self) -> Dict:
         """[RCL_NoVerification] 检查服务器时间"""
-        return self._request('GET', '/v3/serverTime', timeout=timeout)
+        url = f"{self.base_url}/v3/serverTime"
+        response = self.session.get(url, timeout=10)
+        return response.json()
 
-    def get_exchange_info(self, timeout: Optional[float] = None) -> Dict:
-        """[RCL_NoVerification] 获取交易所信息，包括交易对、精度等"""
-        return self._request('GET', '/v3/exchangeInfo', timeout=timeout)
+    def get_exchange_info(self) -> Dict:
+        """[RCL_NoVerification] 获取交易所信息"""
+        url = f"{self.base_url}/v3/exchangeInfo"
+        response = self.session.get(url, timeout=10)
+        return response.json()
 
-    def get_ticker(self, pair: Optional[str] = None, timeout: Optional[float] = None) -> Dict:
-        """[RCL_TSCheck] 获取市场Ticker信息"""
-        # RCL_TSCheck只需要timestamp参数，不需要签名
-        timestamp = self._get_timestamp()
+    def get_ticker(self, pair: str = None) -> Dict:
+        """[RCL_TSCheck] 获取市场行情"""
+        timestamp = self._get_synchronized_timestamp()
         params = {'timestamp': timestamp}
         if pair:
             params['pair'] = pair
-        return self._request('GET', '/v3/ticker', params=params, timeout=timeout)
+            
+        url = f"{self.base_url}/v3/ticker"
+        response = self.session.get(url, params=params, timeout=10)
+        return response.json()
 
     def get_balance(self, timeout: Optional[float] = None) -> Dict:
         """
