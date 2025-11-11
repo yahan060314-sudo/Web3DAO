@@ -6,10 +6,13 @@ import os
 import threading
 from typing import Dict, Optional, List
 from datetime import datetime
-from dotenv import load_dotenv
-
-# 加载环境变量
-load_dotenv()
+try:
+    from dotenv import load_dotenv  # type: ignore
+    # 加载环境变量
+    load_dotenv()
+except ImportError:
+    # dotenv未安装时跳过（不影响运行，但环境变量需要手动设置）
+    pass
 
 
 class CapitalManager:
