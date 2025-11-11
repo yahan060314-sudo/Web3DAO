@@ -1,4 +1,4 @@
-# roostoo_client.py
+# roostoo_client.py (已修正)
 import os
 import time
 import hmac
@@ -34,77 +34,64 @@ class RoostooClient:
         self.base_url = base_url or os.getenv("ROOSTOO_API_URL", "https://mock-api.roostoo.com")
         self.session = requests.Session()
         
+        if not self.api_key or not self.secret_key:
+            raise ValueError("API_KEY 或 SECRET_KEY 未设置。请检查您的 .env 文件或初始化参数。")
+        
         print(f"[RoostooClient] ✓ 使用API: {self.base_url}")
 
     def _get_timestamp(self) -> int:
-        """生成13位毫秒级时间戳整数（与官方示例保持一致）。"""
+        """生成13位毫秒级时间戳整数。"""
         return int(time.time() * 1000)
 
-    def _sign_request(self, payload: Dict[str, Any]) -> Tuple[Dict[str, str], str, int]:
+    def _sign_request(self, payload: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, Any], str]:
         """
         为RCL_TopLevelCheck请求生成签名和头部。
-        严格遵循官方文档中的签名规则，与官方python_demo.py保持一致。
-
+        
         Args:
             payload (Dict[str, Any]): 请求的业务参数。
 
         Returns:
-            Tuple[Dict[str, str], str, int]: 一个元组，包含(请求头, 用于POST data的参数字符串, 时间戳整数)。
+            Tuple[Dict[str, str], Dict[str, Any], str]: 
+            一个元组，包含 (
+                请求头, 
+                用于GET请求的已签名参数字典, 
+                用于POST请求的已签名参数字符串
+            )。
         """
-        # 1. 添加时间戳（整数，与官方示例保持一致）
         timestamp = self._get_timestamp()
-        # 创建新的字典，避免修改原始payload
         signed_payload = payload.copy()
         signed_payload['timestamp'] = timestamp
 
-        # 2. 按照key的字母顺序排序参数（与官方示例完全一致）
-        # 官方示例: query_string = '&'.join(["{}={}".format(k, params[k]) for k in sorted(params.keys())])
         sorted_keys = sorted(signed_payload.keys())
         
-        # 3. 拼接成 "key1=value1&key2=value2" 格式的字符串
-        # 使用与官方示例完全相同的格式: format会将整数自动转换为字符串
-        # 例如: timestamp=1580774512000
-        query_string = '&'.join(["{}={}".format(k, signed_payload[k]) for k in sorted_keys])
+        # 这个字符串既是签名内容，也是POST请求的body
+        query_string = '&'.join([f"{k}={signed_payload[k]}" for k in sorted_keys])
 
-        # 4. 使用HMAC-SHA256算法生成签名（与官方示例完全一致）
         signature = hmac.new(
             self.secret_key.encode('utf-8'),
             query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
 
-        # 5. 构建请求头
         headers = {
             'RST-API-KEY': self.api_key,
             'MSG-SIGNATURE': signature
         }
         
-        return headers, query_string, timestamp
+        # signed_payload 是用于 GET 的 params
+        # query_string 是用于 POST 的 data
+        return headers, signed_payload, query_string
 
     def _request(self, method: str, path: str, timeout: Optional[float] = None, max_retries: int = 3, retry_delay: float = 1.0, **kwargs):
         """
-        通用的请求发送方法，包含统一的错误处理和重试机制。
-        包含API调用频率限制（每分钟最多5次）。
-
-        Args:
-            method (str): HTTP方法 (GET, POST)。
-            path (str): API端点路径。
-            timeout (float, optional): 请求超时时间（秒）。如果为None，使用默认值30秒。
-            max_retries (int): 最大重试次数，默认3次。
-            retry_delay (float): 重试延迟时间（秒），默认1秒。
-            **kwargs: 传递给 requests 的其他参数 (headers, params, data)。
-        
-        Returns:
-            Dict: API返回的JSON数据。
+        通用的请求发送方法，包含统一的错误处理、重试机制和频率限制。
         """
-        # API调用频率限制：每分钟最多5次
         if not API_RATE_LIMITER.can_call():
             wait_time = API_RATE_LIMITER.wait_time()
             if wait_time > 0:
                 print(f"[RoostooClient] ⚠️ API调用频率限制: 需要等待 {wait_time:.1f} 秒")
                 time.sleep(wait_time)
         
-        # 记录API调用
         API_RATE_LIMITER.record_call()
         
         url = f"{self.base_url}{path}"
@@ -112,20 +99,27 @@ class RoostooClient:
         if timeout is None:
             timeout = 30.0
         
-        # 打印请求详情用于调试
         print(f"[RoostooClient] 请求详情:")
         print(f"  方法: {method}")
         print(f"  URL: {url}")
+        # 修正：从kwargs中获取headers, params, data
         if 'headers' in kwargs:
-            print(f"  请求头: {kwargs['headers']}")
+            # 为了安全，不打印完整的API Key和签名
+            safe_headers = kwargs['headers'].copy()
+            if 'RST-API-KEY' in safe_headers:
+                safe_headers['RST-API-KEY'] = f"{safe_headers['RST-API-KEY'][:4]}..."
+            if 'MSG-SIGNATURE' in safe_headers:
+                safe_headers['MSG-SIGNATURE'] = f"{safe_headers['MSG-SIGNATURE'][:8]}..."
+            print(f"  请求头: {safe_headers}")
         if 'params' in kwargs:
-            print(f"  查询参数: {kwargs['params']}")
+            print(f"  查询参数 (GET): {kwargs['params']}")
         if 'data' in kwargs:
-            print(f"  POST数据: {kwargs['data']}")
+            print(f"  请求体 (POST): {kwargs['data']}")
         
         last_exception = None
         for attempt in range(max_retries):
             try:
+                # **kwargs 会自动解包 headers, params, data
                 response = self.session.request(method, url, **kwargs, timeout=timeout)
                 response.raise_for_status()
                 print(f"[RoostooClient] ✓ 请求成功: {response.status_code}")
@@ -133,10 +127,8 @@ class RoostooClient:
             except requests.exceptions.HTTPError as e:
                 print(f"[RoostooClient] ✗ HTTP错误: {e.response.status_code} - {e.response.reason}")
                 print(f"    响应内容: {e.response.text}")
-                # 对于认证错误，直接抛出，不需要重试
                 if e.response.status_code in [401, 403, 451]:
                     raise
-                # 其他HTTP错误可以重试
                 if attempt < max_retries - 1:
                     wait_time = retry_delay * (attempt + 1)
                     print(f"[RoostooClient] ⚠️ HTTP错误 (尝试 {attempt + 1}/{max_retries})，{wait_time:.1f}秒后重试...")
@@ -159,58 +151,38 @@ class RoostooClient:
     
     def check_server_time(self) -> Dict:
         """[RCL_NoVerification] 检查服务器时间"""
-        url = f"{self.base_url}/v3/serverTime"
-        response = self.session.get(url, timeout=10)
-        return response.json()
+        return self._request('GET', '/v3/serverTime')
 
     def get_exchange_info(self) -> Dict:
         """[RCL_NoVerification] 获取交易所信息"""
-        url = f"{self.base_url}/v3/exchangeInfo"
-        response = self.session.get(url, timeout=10)
-        return response.json()
+        return self._request('GET', '/v3/exchangeInfo')
 
     def get_ticker(self, pair: str = None) -> Dict:
         """[RCL_TSCheck] 获取市场行情"""
-        timestamp = self._get_timestamp()
-        params = {'timestamp': timestamp}
+        params = {'timestamp': self._get_timestamp()}
         if pair:
             params['pair'] = pair
-            
-        url = f"{self.base_url}/v3/ticker"
-        response = self.session.get(url, params=params, timeout=10)
-        return response.json()
+        return self._request('GET', '/v3/ticker', params=params)
 
     def get_balance(self, timeout: Optional[float] = None) -> Dict:
         """
-        [RCL_TopLevelCheck] 获取账户余额信息
-        
-        重要: 对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
-        和签名时使用的完全一致。与官方python_demo.py的实现保持一致。
+        [RCL_TopLevelCheck] 获取账户余额信息 (已修正)
         """
-        # 生成签名（与官方示例完全一致）
-        # _sign_request会在内部添加timestamp，确保签名和请求使用相同的时间戳
-        headers, query_string, _ = self._sign_request({})
-        
-        # 对于GET请求，直接使用签名时生成的query_string拼接到URL
-        # 确保服务器验证签名时使用的查询字符串和签名时使用的完全一致
-        return self._request('GET', f'/v3/balance?{query_string}', headers=headers, timeout=timeout)
+        # 修正: 遵循官方示例，使用 params=dictionary 的方式
+        headers, signed_params, _ = self._sign_request({})
+        return self._request('GET', '/v3/balance', headers=headers, params=signed_params, timeout=timeout)
 
     def get_pending_count(self, timeout: Optional[float] = None) -> Dict:
         """
-        [RCL_TopLevelCheck] 获取挂单数量
-        
-        重要: 对于GET请求，必须使用签名时生成的参数，确保服务器验证签名时使用的查询字符串
-        和签名时使用的完全一致。与官方python_demo.py的实现保持一致。
+        [RCL_TopLevelCheck] 获取挂单数量 (已修正)
         """
-        # 生成签名（与官方示例完全一致）
-        headers, query_string, _ = self._sign_request({})
-        
-        # 对于GET请求，直接使用签名时生成的query_string拼接到URL
-        return self._request('GET', f'/v3/pending_count?{query_string}', headers=headers, timeout=timeout)
+        # 修正: 遵循官方示例，使用 params=dictionary 的方式
+        headers, signed_params, _ = self._sign_request({})
+        return self._request('GET', '/v3/pending_count', headers=headers, params=signed_params, timeout=timeout)
 
     def place_order(self, pair: str, side: str, quantity: float, price: Optional[float] = None) -> Dict:
         """
-        [RCL_TopLevelCheck] 下新订单（市价或限价）
+        [RCL_TopLevelCheck] 下新订单（市价或限价） (实现正确，无需修改)
         """
         payload = {
             'pair': pair,
@@ -218,38 +190,39 @@ class RoostooClient:
             'quantity': str(quantity),
         }
         if price is not None:
-            payload['type'] = 'LIMIT'  # 修复: 使用 'type' 而不是 'order_type'
+            payload['type'] = 'LIMIT'
             payload['price'] = str(price)
         else:
-            payload['type'] = 'MARKET'  # 修复: 使用 'type' 而不是 'order_type'
+            payload['type'] = 'MARKET'
         
-        headers, data_string, _ = self._sign_request(payload)
+        # 对于POST，使用签名生成的字符串作为data是正确的
+        headers, _, data_string = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
         return self._request('POST', '/v3/place_order', headers=headers, data=data_string)
 
     def query_order(self, order_id: Optional[str] = None, pair: Optional[str] = None) -> Dict:
-        """[RCL_TopLevelCheck] 查询订单"""
+        """[RCL_TopLevelCheck] 查询订单 (实现正确，无需修改)"""
         payload = {}
         if order_id:
             payload['order_id'] = order_id
         elif pair:
             payload['pair'] = pair
             
-        headers, data_string, _ = self._sign_request(payload)
+        headers, _, data_string = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
         return self._request('POST', '/v3/query_order', headers=headers, data=data_string)
 
     def cancel_order(self, order_id: Optional[str] = None, pair: Optional[str] = None) -> Dict:
-        """[RCL_TopLevelCheck] 取消订单"""
+        """[RCL_TopLevelCheck] 取消订单 (实现正确，无需修改)"""
         payload = {}
         if order_id:
             payload['order_id'] = order_id
         elif pair:
             payload['pair'] = pair
             
-        headers, data_string, _ = self._sign_request(payload)
+        headers, _, data_string = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
         return self._request('POST', '/v3/cancel_order', headers=headers, data=data_string)
