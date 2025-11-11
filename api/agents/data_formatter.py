@@ -222,6 +222,7 @@ class DataFormatter:
     @staticmethod
     def create_market_snapshot(
         ticker: Optional[Dict[str, Any]] = None,
+        tickers: Optional[Dict[str, Dict[str, Any]]] = None,
         balance: Optional[Dict[str, Any]] = None,
         exchange_info: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
@@ -229,20 +230,35 @@ class DataFormatter:
         创建综合市场快照，包含当前市场状态和账户状态
         
         Args:
-            ticker: 格式化的ticker数据
+            ticker: 单个格式化的ticker数据（向后兼容）
+            tickers: 多个ticker数据的字典（pair -> ticker data），优先级高于ticker
             balance: 格式化的余额数据
             exchange_info: 格式化的交易所信息
             
         Returns:
             综合市场快照
         """
-        snapshot = {
-            "type": "market_snapshot",
-            "timestamp": time.time(),
-            "ticker": ticker,
-            "balance": balance,
-            "exchange_info": exchange_info
-        }
+        # 如果提供了tickers字典，使用它；否则使用单个ticker（向后兼容）
+        if tickers is not None and isinstance(tickers, dict) and len(tickers) > 0:
+            # 多个ticker数据
+            snapshot = {
+                "type": "market_snapshot",
+                "timestamp": time.time(),
+                "tickers": tickers,  # 多个ticker数据
+                "ticker": list(tickers.values())[0] if tickers else None,  # 向后兼容：保留第一个ticker
+                "balance": balance,
+                "exchange_info": exchange_info
+            }
+        else:
+            # 单个ticker数据（向后兼容）
+            snapshot = {
+                "type": "market_snapshot",
+                "timestamp": time.time(),
+                "ticker": ticker,
+                "tickers": {ticker.get("pair"): ticker} if ticker and ticker.get("pair") else None,  # 转换为字典格式
+                "balance": balance,
+                "exchange_info": exchange_info
+            }
         return snapshot
     
     @staticmethod

@@ -47,6 +47,69 @@ start_time = None
 logger = None
 
 
+def _to_pair_with_slash(symbol: str) -> str:
+    """
+    将诸如 BTCUSDT 转换为 BTC/USD；已含斜杠的保持不变。
+    """
+    s = str(symbol).strip().upper()
+    if "/" in s:
+        return s
+    if s.endswith("USDT"):
+        base = s[:-4]
+        return f"{base}/USD"
+    if s.endswith("USD"):
+        base = s[:-3]
+        return f"{base}/USD"
+    if len(s) == 6:
+        return f"{s[:3]}/{s[3:]}"
+    return s
+
+
+def load_all_tradeable_usd_pairs() -> list:
+    """
+    从 exchangeInfo 动态加载可交易的 USD 计价交易对，统一为 'BASE/USD'。
+    解析失败时回退为 ['BTC/USD']。
+    """
+    try:
+        client = RoostooClient()
+        info = client.get_exchange_info()
+        candidates = []
+        if isinstance(info, dict):
+            if "Symbols" in info and isinstance(info["Symbols"], list):
+                for item in info["Symbols"]:
+                    pair_val = None
+                    if isinstance(item, dict):
+                        pair_val = item.get("Pair") or item.get("pair") or item.get("Symbol") or item.get("symbol")
+                    elif isinstance(item, str):
+                        pair_val = item
+                    if pair_val:
+                        candidates.append(_to_pair_with_slash(pair_val))
+            elif "symbols" in info and isinstance(info["symbols"], list):
+                for item in info["symbols"]:
+                    pair_val = None
+                    if isinstance(item, dict):
+                        pair_val = item.get("symbol") or item.get("pair")
+                    elif isinstance(item, str):
+                        pair_val = item
+                    if pair_val:
+                        candidates.append(_to_pair_with_slash(pair_val))
+            elif "Pairs" in info and isinstance(info["Pairs"], list):
+                for s in info["Pairs"]:
+                    candidates.append(_to_pair_with_slash(s))
+        # 仅保留 USD 计价，去重且保持顺序
+        seen = set()
+        usd_pairs = []
+        for p in candidates:
+            if p.endswith("/USD") and p not in seen:
+                seen.add(p)
+                usd_pairs.append(p)
+        if not usd_pairs:
+            usd_pairs = ["BTC/USD"]
+        return usd_pairs
+    except Exception:
+        return ["BTC/USD"]
+
+
 def setup_logging():
     """设置日志记录"""
     global logger

@@ -42,7 +42,6 @@ class TradeExecutor(threading.Thread):
         self.default_pair = default_pair
         self._stopped = False
         self._last_order_ts: Optional[float] = None
-        self._first_decision_processed = False  # 标记是否已处理第一个决策
 
     def stop(self):
         self._stopped = True
@@ -129,10 +128,6 @@ class TradeExecutor(threading.Thread):
         else:
             # 不是wait/hold，正常解析
             parsed = self._parse_decision(decision_msg)
-        
-        # 标记第一个决策已处理（无论是否成功解析）
-        if not self._first_decision_processed:
-            self._first_decision_processed = True
         
         if parsed is None:
             decision_text = str(decision_msg.get("decision", ""))[:100]
@@ -269,17 +264,23 @@ class TradeExecutor(threading.Thread):
                 print(f"[Executor] API响应: {resp}")
                 print(f"[Executor] ========================================")
                 
-                # 检查响应是否成功
+                # 修复响应格式检查 - 适配Roostoo API的实际响应格式
                 if isinstance(resp, dict):
-                    if "code" in resp:
-                        if resp["code"] == 0 or resp["code"] == 200:
-                            print(f"[Executor] ✓ 订单执行成功 (code: {resp['code']})")
-                        else:
-                            print(f"[Executor] ⚠️ 订单响应代码: {resp['code']}, 消息: {resp.get('message', 'N/A')}")
-                    elif "order_id" in resp or "data" in resp:
-                        print(f"[Executor] ✓ 订单已创建，响应包含订单信息")
+                    # Roostoo API的成功标志是 'Success': True
+                    if resp.get('Success') is True:
+                        print(f"[Executor] ✅ 订单执行成功")
+                        order_detail = resp.get('OrderDetail', {})
+                        if order_detail:
+                            order_id = order_detail.get('OrderID')
+                            status = order_detail.get('Status')
+                            if order_id:
+                                print(f"[Executor] 📝 订单ID: {order_id}, 状态: {status}")
                     else:
-                        print(f"[Executor] ⚠️ 订单响应格式异常，但已发送到API")
+                        # 订单失败
+                        err_msg = resp.get('ErrMsg', 'Unknown error')
+                        print(f"[Executor] ⚠️ 订单失败: {err_msg}")
+                else:
+                    print(f"[Executor] ⚠️ 订单响应格式异常，但已发送到API")
                 
                 self._last_order_ts = now
         except Exception as e:
@@ -469,7 +470,7 @@ class TradeExecutor(threading.Thread):
         quantity = 0.01  # 默认值
         qty_patterns = [
             r'\b(?:buy|sell|purchase)\s+(\d+\.?\d*)',  # "buy 0.01"
-            r'\b(\d+\.?\d*)\s+(?:btc|eth|sol|bnb|doge)',  # "0.01 BTC"
+            r'\b(\d+\.?\d*)\s+([a-z]{2,10})\b',  # "0.01 BTC" 或 "0.01 ETH" 等（支持所有币种）
             r'quantity[:\s]+(\d+\.?\d*)',  # "quantity: 0.01"
             r'amount[:\s]+(\d+\.?\d*)',  # "amount: 0.01"
         ]

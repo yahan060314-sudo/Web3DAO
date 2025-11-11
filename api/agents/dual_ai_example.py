@@ -54,16 +54,18 @@ def main():
     roostoo_client = RoostooClient()
     print("✓ Roostoo客户端创建成功")
     
-    # 5. 创建市场数据采集器
+    # 5. 创建市场数据采集器（自动发现所有可用交易对）
     collector = MarketDataCollector(
         bus=bus,
         market_topic="market_ticks",
-        pairs=["BTC/USD"],
-        collect_interval=5.0,
+        pairs=None,  # None表示自动发现所有可用交易对
+        collect_interval=None,  # None表示根据交易对数量自动计算最优间隔
         collect_balance=True,
-        collect_ticker=True
+        collect_ticker=True,
+        auto_discover_pairs=True,  # 自动发现所有可用交易对
+        batch_size=3  # 每次循环采集3个交易对（避免单次调用太多API）
     )
-    print("✓ 市场数据采集器创建成功")
+    print("✓ 市场数据采集器创建成功（将自动发现所有可用交易对，并自动优化采集间隔）")
     
     # 6. 创建Agent管理器
     manager = AgentManager()

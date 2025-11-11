@@ -84,7 +84,10 @@ class RateLimiter:
 
 
 # 预定义的频率限制器
-API_RATE_LIMITER = RateLimiter(max_calls=5, time_window=60.0)  # 每分钟最多5次
+# 将API调用限制从每分钟5次降为每分钟3次，以进一步降低对API的压力
+API_RATE_LIMITER = RateLimiter(max_calls=3, time_window=60.0)  # 每分钟最多3次
 DECISION_RATE_LIMITER = RateLimiter(max_calls=1, time_window=60.0)  # 每个Agent每分钟最多1次（已废弃，保留兼容性）
 GLOBAL_DECISION_RATE_LIMITER = RateLimiter(max_calls=1, time_window=60.0)  # 全局决策频率限制：整个bot每分钟最多1次
+
+
 

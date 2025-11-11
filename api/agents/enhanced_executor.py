@@ -587,7 +587,7 @@ class EnhancedTradeExecutor(threading.Thread):
         quantity = 0.01
         qty_patterns = [
             r'\b(?:buy|sell|purchase)\s+(\d+\.?\d*)',
-            r'\b(\d+\.?\d*)\s+(?:btc|eth|sol|bnb|doge)',
+            r'\b(\d+\.?\d*)\s+([a-z]{2,10})\b',  # "0.01 BTC" 或 "0.01 ETH" 等（支持所有币种）
             r'quantity[:\s]+(\d+\.?\d*)',
             r'amount[:\s]+(\d+\.?\d*)',
         ]
@@ -617,11 +617,28 @@ class EnhancedTradeExecutor(threading.Thread):
                 except ValueError:
                     continue
         
+        # 尝试从文本中提取币种，支持所有币种
         pair = self.default_pair
-        for sym in ["btc", "eth", "sol", "bnb", "doge"]:
-            if re.search(rf'\b{sym}\b', text_lower):
-                pair = f"{sym.upper()}/USD"
-                break
+        try:
+            if self.client:
+                exchange_info = self.client.get_exchange_info()
+                trade_pairs = exchange_info.get('data', {}).get('TradePairs', {})
+                if not trade_pairs:
+                    trade_pairs = exchange_info.get('TradePairs', {})
+                
+                # 查找文本中提到的币种
+                for available_pair in trade_pairs.keys():
+                    base_currency = available_pair.split('/')[0] if '/' in available_pair else available_pair.split('-')[0]
+                    if re.search(rf'\b{base_currency.lower()}\b', text_lower):
+                        pair = available_pair
+                        break
+        except Exception as e:
+            print(f"[EnhancedExecutor] ⚠️ 获取交易对列表失败: {e}，使用默认交易对")
+            # 回退到常见币种
+            for sym in ["btc", "eth", "sol", "bnb", "doge"]:
+                if re.search(rf'\b{sym}\b', text_lower):
+                    pair = f"{sym.upper()}/USD"
+                    break
         
         return {"side": side, "quantity": quantity, "price": price, "pair": pair}
     
