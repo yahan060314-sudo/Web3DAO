@@ -65,6 +65,34 @@ class TradeExecutor(threading.Thread):
             print(f"[Executor] Rate limit: {elapsed:.1f}s < {TRADE_INTERVAL_SECONDS}s, skipping order")
             return
 
+        # 首先检查是否是wait/hold决策（这是有效的决策，不需要执行交易）
+        decision_text = str(decision_msg.get("decision", "")).strip()
+        is_wait_hold = False
+        if decision_text:
+            try:
+                # 尝试解析JSON格式
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', decision_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    data = json.loads(json_str)
+                    action = data.get("action", "").lower()
+                    if action in ["wait", "hold"]:
+                        is_wait_hold = True
+            except (json.JSONDecodeError, ValueError):
+                pass
+            
+            # 检查自然语言格式
+            if not is_wait_hold:
+                text_lower = decision_text.lower()
+                if any(word in text_lower for word in ["hold", "wait", "no action", "no trade", "do nothing"]):
+                    is_wait_hold = True
+        
+        if is_wait_hold:
+            # wait/hold是有效的决策，不需要执行交易
+            agent = decision_msg.get("agent", "unknown")
+            print(f"[Executor] ✓ 决策为 wait/hold，无需执行交易 (Agent: {agent})")
+            return
+
         parsed = self._parse_decision(decision_msg)
         if parsed is None:
             decision_text = str(decision_msg.get("decision", ""))[:100]
@@ -75,12 +103,11 @@ class TradeExecutor(threading.Thread):
                 print(f"    Agent: {decision_msg.get('agent', 'Unknown')}")
                 print(f"    Decision: {decision_text}...")
                 print(f"    Action: REJECTED - JSON format is mandatory")
-                # 这里可以添加回退逻辑（如使用其他Agent的决策）
-                # 但根据用户要求，AI分工还没实现，暂时不添加
                 return
             else:
-                print(f"[Executor] Failed to parse decision: {decision_text}...")
-                print(f"    Note: Decision may be 'wait' or 'hold' (no action needed)")
+                print(f"[Executor] ✗ 决策无法解析（格式错误）")
+                print(f"    Agent: {decision_msg.get('agent', 'Unknown')}")
+                print(f"    Decision: {decision_text}...")
                 return
 
         side = parsed["side"]  # 'BUY' or 'SELL'
