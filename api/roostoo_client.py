@@ -56,7 +56,7 @@ class RoostooClient:
         """生成13位毫秒级时间戳字符串。"""
         return str(int(time.time() * 1000))
 
-    def _sign_request(self, payload: Dict[str, Any]) -> Tuple[Dict[str, str], str]:
+    def _sign_request(self, payload: Dict[str, Any]) -> Tuple[Dict[str, str], str, str]:
         """
         为RCL_TopLevelCheck请求生成签名和头部。
         严格遵循README.md中的签名规则。
@@ -65,10 +65,11 @@ class RoostooClient:
             payload (Dict[str, Any]): 请求的业务参数。
 
         Returns:
-            Tuple[Dict[str, str], str]: 一个元组，包含(请求头, 用于POST data的参数字符串)。
+            Tuple[Dict[str, str], str, str]: 一个元组，包含(请求头, 用于POST data的参数字符串, 时间戳)。
         """
         # 1. 添加时间戳
-        payload['timestamp'] = self._get_timestamp()
+        timestamp = self._get_timestamp()
+        payload['timestamp'] = timestamp
 
         # 2. 按照key的字母顺序排序参数
         sorted_payload = sorted(payload.items())
@@ -89,7 +90,7 @@ class RoostooClient:
             'MSG-SIGNATURE': signature
         }
         
-        return headers, total_params
+        return headers, total_params, timestamp
 
     def _request(self, method: str, path: str, timeout: Optional[float] = None, max_retries: int = 3, retry_delay: float = 1.0, **kwargs):
         """
@@ -208,15 +209,17 @@ class RoostooClient:
 
     def get_balance(self, timeout: Optional[float] = None) -> Dict:
         """[RCL_TopLevelCheck] 获取账户余额信息"""
-        headers, _ = self._sign_request({})
-        # 对于GET请求，timestamp需要作为URL参数
-        params = {'timestamp': headers.pop('timestamp', self._get_timestamp())} # 从payload中提取timestamp
-        return self._request('GET', '/v3/balance', headers=headers, params={'timestamp': self._get_timestamp()}, timeout=timeout)
+        headers, _, timestamp = self._sign_request({})
+        # 对于GET请求，timestamp需要作为URL参数，使用签名时的时间戳
+        params = {'timestamp': timestamp}
+        return self._request('GET', '/v3/balance', headers=headers, params=params, timeout=timeout)
 
-    def get_pending_count(self) -> Dict:
+    def get_pending_count(self, timeout: Optional[float] = None) -> Dict:
         """[RCL_TopLevelCheck] 获取挂单数量"""
-        headers, _ = self._sign_request({})
-        return self._request('GET', '/v3/pending_count', headers=headers, params={'timestamp': self._get_timestamp()})
+        headers, _, timestamp = self._sign_request({})
+        # 对于GET请求，timestamp需要作为URL参数，使用签名时的时间戳
+        params = {'timestamp': timestamp}
+        return self._request('GET', '/v3/pending_count', headers=headers, params=params, timeout=timeout)
 
     def place_order(self, pair: str, side: str, quantity: float, price: Optional[float] = None) -> Dict:
         """[RCL_TopLevelCheck] 下新订单（市价或限价）"""
@@ -231,7 +234,7 @@ class RoostooClient:
         else:
             payload['order_type'] = 'MARKET'
         
-        headers, data_string = self._sign_request(payload)
+        headers, data_string, _ = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
         return self._request('POST', '/v3/place_order', headers=headers, data=data_string)
@@ -244,7 +247,7 @@ class RoostooClient:
         elif pair:
             payload['pair'] = pair
             
-        headers, data_string = self._sign_request(payload)
+        headers, data_string, _ = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
         return self._request('POST', '/v3/query_order', headers=headers, data=data_string)
@@ -257,7 +260,7 @@ class RoostooClient:
         elif pair:
             payload['pair'] = pair
             
-        headers, data_string = self._sign_request(payload)
+        headers, data_string, _ = self._sign_request(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         
         return self._request('POST', '/v3/cancel_order', headers=headers, data=data_string)
