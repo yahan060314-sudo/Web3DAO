@@ -58,6 +58,10 @@ class TradeExecutor(threading.Thread):
                 print(f"[Executor] Error handling decision {msg}: {e}")
 
     def _maybe_execute(self, decision_msg: Dict[str, Any]) -> None:
+        # 兼容旧实例：若属性缺失则初始化
+        if not hasattr(self, "_first_decision_processed"):
+            self._first_decision_processed = False
+
         now = time.time()
         if self._last_order_ts is not None and (now - self._last_order_ts) < TRADE_INTERVAL_SECONDS:
             # 限频：忽略本次决策
