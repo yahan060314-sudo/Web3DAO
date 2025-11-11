@@ -303,17 +303,23 @@ class TradeExecutor(threading.Thread):
                 print(f"[Executor] API响应: {resp}")
                 print(f"[Executor] ========================================")
                 
-                # 检查响应是否成功
+                # 修复响应格式检查 - 适配Roostoo API的实际响应格式
                 if isinstance(resp, dict):
-                    if "code" in resp:
-                        if resp["code"] == 0 or resp["code"] == 200:
-                            print(f"[Executor] ✓ 订单执行成功 (code: {resp['code']})")
-                        else:
-                            print(f"[Executor] ⚠️ 订单响应代码: {resp['code']}, 消息: {resp.get('message', 'N/A')}")
-                    elif "order_id" in resp or "data" in resp:
-                        print(f"[Executor] ✓ 订单已创建，响应包含订单信息")
+                    # Roostoo API的成功标志是 'Success': True
+                    if resp.get('Success') is True:
+                        print(f"[Executor] ✅ 订单执行成功")
+                        order_detail = resp.get('OrderDetail', {})
+                        if order_detail:
+                            order_id = order_detail.get('OrderID')
+                            status = order_detail.get('Status')
+                            if order_id:
+                                print(f"[Executor] 📝 订单ID: {order_id}, 状态: {status}")
                     else:
-                        print(f"[Executor] ⚠️ 订单响应格式异常，但已发送到API")
+                        # 订单失败
+                        err_msg = resp.get('ErrMsg', 'Unknown error')
+                        print(f"[Executor] ⚠️ 订单失败: {err_msg}")
+                else:
+                    print(f"[Executor] ⚠️ 订单响应格式异常，但已发送到API")
                 
                 self._last_order_ts = now
         except Exception as e:
@@ -546,4 +552,3 @@ class TradeExecutor(threading.Thread):
         if symbol:
             return f"{symbol}/USD"
         return self.default_pair
-
