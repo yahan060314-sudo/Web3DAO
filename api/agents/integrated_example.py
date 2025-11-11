@@ -81,10 +81,15 @@ def main():
     
     # 6. 创建并启动交易执行器
     print("[6] Starting Trade Executor...")
+    # 检查是否使用dry_run模式（可以通过环境变量控制）
+    import os
+    dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
+    
     executor = TradeExecutor(
         bus=mgr.bus,
         decision_topic=mgr.decision_topic,
-        default_pair="BTC/USD"
+        default_pair="BTC/USD",
+        dry_run=dry_run  # 默认False（真实交易），可通过环境变量DRY_RUN=true设置为测试模式
     )
     executor.start()
     
