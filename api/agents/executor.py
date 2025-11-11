@@ -42,6 +42,7 @@ class TradeExecutor(threading.Thread):
         self.default_pair = default_pair
         self._stopped = False
         self._last_order_ts: Optional[float] = None
+        self._first_decision_processed = False  # 标记是否已处理第一个决策
 
     def stop(self):
         self._stopped = True
@@ -87,13 +88,39 @@ class TradeExecutor(threading.Thread):
                 if any(word in text_lower for word in ["hold", "wait", "no action", "no trade", "do nothing"]):
                     is_wait_hold = True
         
-        if is_wait_hold:
-            # wait/hold是有效的决策，不需要执行交易
+        # 如果是第一个决策且是wait/hold，强制转换为一个合理的交易决策
+        if is_wait_hold and not self._first_decision_processed:
+            agent = decision_msg.get("agent", "unknown")
+            print(f"[Executor] ⚠️ 第一个决策是 wait/hold，强制转换为初始交易决策 (Agent: {agent})")
+            # 获取当前价格
+            market_snapshot = decision_msg.get("market_snapshot")
+            current_price = None
+            if market_snapshot and market_snapshot.get("ticker"):
+                current_price = market_snapshot["ticker"].get("price")
+            
+            if current_price:
+                # 强制创建一个买入决策（小额，保守）
+                print(f"[Executor] 强制创建初始买入决策: 价格={current_price}, 数量=0.01 BTC")
+                parsed = {
+                    "side": "BUY",
+                    "quantity": 0.01,
+                    "price": None,  # 市价单
+                    "pair": self.default_pair
+                }
+                self._first_decision_processed = True
+                # 跳过后续解析，直接使用强制创建的决策
+            else:
+                print(f"[Executor] ⚠️ 无法获取价格，跳过强制交易")
+                self._first_decision_processed = True
+                return
+        elif is_wait_hold:
+            # 非第一个决策的wait/hold，正常处理
             agent = decision_msg.get("agent", "unknown")
             print(f"[Executor] ✓ 决策为 wait/hold，无需执行交易 (Agent: {agent})")
             return
-
-        parsed = self._parse_decision(decision_msg)
+        else:
+            # 不是wait/hold，正常解析
+            parsed = self._parse_decision(decision_msg)
         if parsed is None:
             decision_text = str(decision_msg.get("decision", ""))[:100]
             json_valid = decision_msg.get("json_valid", None)
@@ -114,6 +141,10 @@ class TradeExecutor(threading.Thread):
         quantity = parsed["quantity"]
         price = parsed.get("price")
         pair = parsed.get("pair", self.default_pair)
+        
+        # 标记第一个决策已处理
+        if not self._first_decision_processed:
+            self._first_decision_processed = True
         
         # 记录解析结果
         order_type = "LIMIT" if price else "MARKET"
