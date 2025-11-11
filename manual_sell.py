@@ -33,12 +33,8 @@ def place_market_sell(
     print(f"Type     : {order_type}")
     print("========================================")
 
-    resp = client.place_order(
-        pair=pair,
-        side=side,
-        quantity=quantity,
-        order_type=order_type
-    )
+    # 市价单：不传 price，即为 MARKET
+    resp = client.place_order(pair=pair, side=side, quantity=quantity)
     print("✓ Order placed successfully")
     print(resp)
 
@@ -69,5 +65,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
