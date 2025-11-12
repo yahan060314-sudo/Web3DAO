@@ -637,3 +637,4 @@ class TradeExecutor(threading.Thread):
             return f"{symbol}/USD"
         return self.default_pair
 
+
