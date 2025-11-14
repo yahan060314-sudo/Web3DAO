@@ -78,7 +78,18 @@ def load_all_tradeable_usd_pairs() -> list:
         client = RoostooClient()
         info = client.get_exchange_info()
         candidates = []
+        
+        # 调试：打印API返回的键，帮助诊断问题
         if isinstance(info, dict):
+            logger.debug(f"[load_all_tradeable_usd_pairs] API返回的键: {list(info.keys())}")
+            
+            # 检查 TradePairs 字段（Roostoo API可能使用这个字段）
+            if "TradePairs" in info and isinstance(info["TradePairs"], dict):
+                for pair_key, pair_info in info["TradePairs"].items():
+                    if pair_key:
+                        candidates.append(_to_pair_with_slash(pair_key))
+            
+            # 检查 Symbols 字段
             if "Symbols" in info and isinstance(info["Symbols"], list):
                 for item in info["Symbols"]:
                     pair_val = None
@@ -88,6 +99,7 @@ def load_all_tradeable_usd_pairs() -> list:
                         pair_val = item
                     if pair_val:
                         candidates.append(_to_pair_with_slash(pair_val))
+            # 检查 symbols 字段（小写）
             elif "symbols" in info and isinstance(info["symbols"], list):
                 for item in info["symbols"]:
                     pair_val = None
@@ -97,9 +109,11 @@ def load_all_tradeable_usd_pairs() -> list:
                         pair_val = item
                     if pair_val:
                         candidates.append(_to_pair_with_slash(pair_val))
+            # 检查 Pairs 字段
             elif "Pairs" in info and isinstance(info["Pairs"], list):
                 for s in info["Pairs"]:
                     candidates.append(_to_pair_with_slash(s))
+        
         # 仅保留 USD 计价，去重且保持顺序
         seen = set()
         usd_pairs = []
@@ -107,10 +121,18 @@ def load_all_tradeable_usd_pairs() -> list:
             if p.endswith("/USD") and p not in seen:
                 seen.add(p)
                 usd_pairs.append(p)
+        
+        # 如果只找到1个交易对，可能是Mock API的限制
+        if len(usd_pairs) == 1:
+            logger.warning(f"[load_all_tradeable_usd_pairs] ⚠️ 只找到1个USD交易对: {usd_pairs[0]}")
+            logger.warning("   这可能是Mock API的限制（只返回BTC/USD）")
+            logger.warning("   如需测试多币种，请使用环境变量 TRADE_PAIRS=BTC/USD,ETH/USD,SOL/USD 覆盖")
+        
         if not usd_pairs:
             usd_pairs = ["BTC/USD"]
         return usd_pairs
-    except Exception:
+    except Exception as e:
+        logger.error(f"[load_all_tradeable_usd_pairs] 获取交易对失败: {e}")
         return ["BTC/USD"]
 
 
@@ -192,15 +214,18 @@ def verify_configuration() -> bool:
     if os.getenv("DEEPSEEK_API_KEY"):
         llm_providers.append("deepseek")
         logger.info("✓ DEEPSEEK_API_KEY已配置")
-    if os.getenv("QWEN_API_KEY"):
+    if os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY"):
         llm_providers.append("qwen")
-        logger.info("✓ QWEN_API_KEY已配置")
+        if os.getenv("QWEN_API_KEY"):
+            logger.info("✓ QWEN_API_KEY已配置")
+        if os.getenv("DASHSCOPE_API_KEY"):
+            logger.info("✓ DASHSCOPE_API_KEY已配置（可用于Qwen）")
     if os.getenv("MINIMAX_API_KEY"):
         llm_providers.append("minimax")
         logger.info("✓ MINIMAX_API_KEY已配置")
     
     if not llm_providers:
-        errors.append("❌ 至少需要配置一个LLM API KEY (DEEPSEEK_API_KEY/QWEN_API_KEY/MINIMAX_API_KEY)")
+        errors.append("❌ 至少需要配置一个LLM API KEY (DEEPSEEK_API_KEY/QWEN_API_KEY/DASHSCOPE_API_KEY/MINIMAX_API_KEY)")
     
     # 检查DRY_RUN模式
     dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
@@ -366,14 +391,16 @@ def main():
     llm_provider_1 = None
     if os.getenv("DEEPSEEK_API_KEY"):
         llm_provider_1 = "deepseek"
-    elif os.getenv("QWEN_API_KEY"):
+    elif os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY"):
         llm_provider_1 = "qwen"
     elif os.getenv("MINIMAX_API_KEY"):
         llm_provider_1 = "minimax"
     
     # Agent 2: 优先使用qwen（如果可用），否则使用其他可用的LLM
+    # 检查qwen是否可用：支持QWEN_API_KEY或DASHSCOPE_API_KEY
+    qwen_available = bool(os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY"))
     llm_provider_2 = None
-    if os.getenv("QWEN_API_KEY"):
+    if qwen_available:
         llm_provider_2 = "qwen"
     elif os.getenv("MINIMAX_API_KEY") and llm_provider_1 != "minimax":
         llm_provider_2 = "minimax"
@@ -623,5 +650,7 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
 
 
