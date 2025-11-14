@@ -446,7 +446,10 @@ def main():
         pairs=all_usd_pairs,
         collect_interval=30.0,  # 延长为30秒，进一步降低API调用频率
         collect_balance=True,
-        collect_ticker=True
+        collect_ticker=True,
+        decision_topic=mgr.decision_topic,  # 传入决策topic，用于等待Agent决策
+        wait_for_decisions=True,  # 启用等待决策功能
+        decision_wait_timeout=120.0  # 最多等待120秒
     )
     collector.start()
     
@@ -635,9 +638,6 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-
-
-
 
 
 
