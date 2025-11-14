@@ -113,9 +113,13 @@ class BaseAgent(threading.Thread):
             pair = msg.get("pair")
             if pair:
                 self.current_tickers[pair] = msg
+                # 调试：打印接收到的ticker（只打印前几个，避免日志过多）
+                if len(self.current_tickers) <= 3 or pair in ["BTC/USD", "ETH/USD", "SOL/USD"]:
+                    print(f"[{self.name}] ✓ 收到ticker数据: {pair} = ${msg.get('price', 'N/A')}")
         elif data_type == "balance":
             # 更新余额数据
             self.current_balance = msg
+            print(f"[{self.name}] ✓ 收到余额数据: ${msg.get('total_balance', 'N/A')}")
         elif data_type == "exchange_info":
             # 更新交易所信息（包含所有可用交易对）
             self.current_exchange_info = msg
@@ -124,11 +128,17 @@ class BaseAgent(threading.Thread):
         # 使用tickers字典格式，而不是单个ticker
         tickers_dict = self.current_tickers if self.current_tickers else None
         
+        # 即使没有balance，只要有ticker数据就创建快照（允许Agent基于价格数据做决策）
         self.last_market_snapshot = self.formatter.create_market_snapshot(
             tickers=tickers_dict,
             balance=self.current_balance,
             exchange_info=getattr(self, 'current_exchange_info', None)
         )
+        
+        # 调试：确认快照已创建
+        if self.last_market_snapshot and tickers_dict:
+            ticker_count = len(tickers_dict)
+            print(f"[{self.name}] ✓ 市场快照已更新: {ticker_count}个ticker, balance={'有' if self.current_balance else '无'}")
 
     def _handle_dialog(self, msg: Dict[str, Any]) -> None:
         """
@@ -150,6 +160,10 @@ class BaseAgent(threading.Thread):
         基于当前市场数据自动生成决策（定期调用）
         """
         if self.last_market_snapshot is None:
+            # 调试：检查为什么没有市场数据
+            ticker_count = len(self.current_tickers) if self.current_tickers else 0
+            has_balance = self.current_balance is not None
+            print(f"[{self.name}] ⚠️ 没有市场快照数据 - tickers: {ticker_count}, balance: {has_balance}")
             return  # 没有市场数据，不生成决策
         
         # 构建决策提示词
