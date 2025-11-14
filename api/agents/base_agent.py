@@ -83,18 +83,34 @@ class BaseAgent(threading.Thread):
             # 接收市场数据（使用较短的timeout，但循环接收，确保不遗漏消息）
             # 连续接收多个消息，直到没有更多消息
             received_any = False
-            for _ in range(50):  # 增加接收数量，确保不遗漏完整快照（最多连续接收50条消息）
-                market_msg = self.market_sub.recv(timeout=0.1)
+            complete_snapshot_received = False
+            
+            # 第一遍：快速扫描所有消息，寻找完整快照
+            pending_messages = []
+            for _ in range(100):  # 增加接收数量，确保不遗漏完整快照
+                market_msg = self.market_sub.recv(timeout=0.05)
                 if market_msg is not None:
-                    # 检查是否是完整快照（优先处理）
                     msg_type = market_msg.get("type", "unknown")
                     is_complete = market_msg.get("is_complete", False)
                     if is_complete or msg_type == "complete_market_snapshot":
+                        # 找到完整快照，立即处理
                         print(f"[{self.name}] 🔔 检测到完整快照消息，立即处理...")
-                    self._handle_market_data(market_msg)
-                    received_any = True
+                        self._handle_market_data(market_msg)
+                        complete_snapshot_received = True
+                        received_any = True
+                        # 处理完完整快照后，继续处理其他待处理的消息
+                        break
+                    else:
+                        # 暂存其他消息
+                        pending_messages.append(market_msg)
                 else:
                     break  # 没有更多消息，退出循环
+            
+            # 如果没有找到完整快照，处理所有待处理的消息
+            if not complete_snapshot_received:
+                for msg in pending_messages:
+                    self._handle_market_data(msg)
+                    received_any = True
             
             # 接收对话消息
             dialog_msg = self.dialog_sub.recv(timeout=0.01)
@@ -442,7 +458,6 @@ Provide your decision in JSON format, selecting the currency with the best oppor
             pass
         
         return False
-
 
 
 
