@@ -28,7 +28,10 @@ class MarketDataCollector(threading.Thread):
         pairs: List[str] = None,
         collect_interval: float = 12.0,
         collect_balance: bool = True,
-        collect_ticker: bool = True
+        collect_ticker: bool = True,
+        decision_topic: Optional[str] = None,
+        wait_for_decisions: bool = True,
+        decision_wait_timeout: float = 120.0
     ):
         """
         初始化市场数据采集器
@@ -65,6 +68,14 @@ class MarketDataCollector(threading.Thread):
         # 完整快照发布相关
         self._last_complete_snapshot_time = 0  # 上次发布完整快照的时间
         self._complete_snapshot_interval = 600  # 每10分钟发布一次完整快照（或采集完一轮后）
+        
+        # 决策等待相关
+        self.decision_topic = decision_topic  # 决策topic，用于监听Agent决策
+        self.wait_for_decisions = wait_for_decisions  # 是否等待Agent决策完成
+        self.decision_wait_timeout = decision_wait_timeout  # 等待决策的超时时间（秒）
+        self._decision_subscription = None  # 决策订阅（用于监听决策）
+        if self.decision_topic and self.wait_for_decisions:
+            self._decision_subscription = bus.subscribe(decision_topic)
     
     def stop(self):
         """停止采集器"""
@@ -190,6 +201,52 @@ class MarketDataCollector(threading.Thread):
         self.bus.publish(self.market_topic, complete_snapshot)
         print(f"[MarketDataCollector] ✓ 已发布完整市场快照到消息总线: {len(self._last_tickers)}/{len(self.pairs)} 个交易对已采集")
         self._last_complete_snapshot_time = time.time()
+        
+        # 如果启用了等待决策功能，等待Agent分析并做出决策
+        if self.wait_for_decisions and self._decision_subscription:
+            print(f"[MarketDataCollector] ⏳ 等待Agent分析完整快照并做出决策（最多等待 {self.decision_wait_timeout} 秒）...")
+            self._wait_for_agent_decisions()
+    
+    def _wait_for_agent_decisions(self):
+        """
+        等待Agent分析完整快照并做出决策
+        监听decision_topic，等待至少一个Agent做出决策，或超时
+        """
+        if not self._decision_subscription:
+            return
+        
+        start_time = time.time()
+        decisions_received = 0
+        max_decisions = 2  # 最多等待2个Agent的决策（如果有2个Agent）
+        
+        print(f"[MarketDataCollector] 🔔 开始监听Agent决策...")
+        
+        while (time.time() - start_time) < self.decision_wait_timeout:
+            # 非阻塞接收决策消息
+            decision_msg = self._decision_subscription.recv(timeout=1.0)
+            if decision_msg is not None:
+                agent_name = decision_msg.get("agent", "unknown")
+                decision_text = decision_msg.get("decision", "")
+                # 只显示前100个字符，避免日志过长
+                decision_preview = decision_text[:100] + "..." if len(decision_text) > 100 else decision_text
+                print(f"[MarketDataCollector] ✓ 收到Agent决策: {agent_name} - {decision_preview}")
+                decisions_received += 1
+                
+                # 如果收到了足够的决策（每个Agent一个），可以提前结束
+                if decisions_received >= max_decisions:
+                    print(f"[MarketDataCollector] ✓ 已收到 {decisions_received} 个Agent的决策，继续下一轮采集")
+                    return
+            
+            # 每5秒打印一次等待状态
+            elapsed = time.time() - start_time
+            if int(elapsed) % 5 == 0 and elapsed > 0:
+                print(f"[MarketDataCollector] ⏳ 等待中... ({int(elapsed)}/{int(self.decision_wait_timeout)} 秒)")
+        
+        elapsed = time.time() - start_time
+        if decisions_received > 0:
+            print(f"[MarketDataCollector] ✓ 等待完成: 收到 {decisions_received} 个决策，耗时 {elapsed:.1f} 秒，继续下一轮采集")
+        else:
+            print(f"[MarketDataCollector] ⚠️ 等待超时: {elapsed:.1f} 秒内未收到Agent决策，继续下一轮采集")
     
     def get_latest_snapshot(self) -> Dict[str, Any]:
         """
@@ -202,8 +259,6 @@ class MarketDataCollector(threading.Thread):
             tickers=self._last_tickers,  # 返回所有ticker，而不是单个
             balance=self._last_balance
         )
-
-
 
 
 
