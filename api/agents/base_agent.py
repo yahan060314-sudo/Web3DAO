@@ -111,9 +111,30 @@ class BaseAgent(threading.Thread):
         处理接收到的市场数据，根据数据类型进行聚合
         
         Args:
-            msg: 市场数据消息（可能是ticker、balance、exchange_info等）
+            msg: 市场数据消息（可能是ticker、balance、exchange_info、complete_market_snapshot等）
         """
         data_type = msg.get("type", "unknown")
+        
+        # 检查是否是完整市场快照（采集完一轮后发布）
+        is_complete_snapshot = msg.get("is_complete", False) or data_type == "complete_market_snapshot"
+        
+        if is_complete_snapshot:
+            # 收到完整市场快照，直接使用它
+            self.last_market_snapshot = msg
+            ticker_count = len(msg.get("tickers", {})) if isinstance(msg.get("tickers"), dict) else 0
+            total_pairs = msg.get("total_pairs_collected", 0)
+            print(f"[{self.name}] ✓ 收到完整市场快照: {ticker_count}个交易对已采集（共{msg.get('total_pairs_available', '?')}个）")
+            
+            # 更新内部的ticker和balance数据
+            if "tickers" in msg and isinstance(msg["tickers"], dict):
+                self.current_tickers = msg["tickers"]
+            if "balance" in msg:
+                self.current_balance = msg["balance"]
+            
+            # 收到完整快照后，立即触发决策生成（分析所有交易对）
+            print(f"[{self.name}] 🎯 完整快照已接收，准备分析所有交易对并生成决策...")
+            self._trigger_decision_from_complete_snapshot()
+            return
         
         if data_type == "ticker":
             # 更新ticker数据
@@ -196,6 +217,33 @@ class BaseAgent(threading.Thread):
 Based on this information, what trading action do you recommend? Provide your decision."""
         
         # 生成决策
+        self._generate_decision(user_prompt)
+    
+    def _trigger_decision_from_complete_snapshot(self):
+        """
+        基于完整市场快照触发决策生成
+        在收到完整快照后调用，让Agent分析所有交易对
+        """
+        if self.last_market_snapshot is None:
+            return
+        
+        # 构建决策提示词，强调分析所有交易对
+        market_text = self.formatter.format_for_llm(self.last_market_snapshot)
+        
+        user_prompt = f"""Complete market snapshot with all trading pairs has been collected. Analyze ALL available trading pairs and make a trading decision.
+
+Current Market Data (All Pairs):
+{market_text}
+
+IMPORTANT: You have access to data from ALL trading pairs. Compare opportunities across all currencies and select the BEST trading opportunity based on:
+- Price trends and momentum
+- 24h change percentage
+- Volume and liquidity
+- Risk-reward ratios
+
+Provide your decision in JSON format, selecting the currency with the best opportunity."""
+        
+        # 生成决策（会检查全局频率限制）
         self._generate_decision(user_prompt)
     
     def _make_decision_from_dialog(self, dialog_msg: Dict[str, Any]) -> None:
@@ -386,6 +434,8 @@ Based on this information, what trading action do you recommend? Provide your de
             pass
         
         return False
+
+
 
 
  
