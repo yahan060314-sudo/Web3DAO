@@ -297,10 +297,14 @@ class DataFormatter:
                     try:
                         lines.append(f"  Current Price: ${float(price):.2f}")
                     except (ValueError, TypeError):
-                        pass
+                        # 如果转换失败，至少显示原始值
+                        lines.append(f"  Current Price: {price} (raw)")
                 else:
-                    # 即使没有price，也显示ticker数据存在
-                    lines.append(f"  Market data available for {pair} (price data processing...)")
+                    # 即使没有price，也显示ticker数据存在，并显示可用的字段
+                    available_fields = [k for k in ticker.keys() if k not in ['type', 'timestamp', 'raw', 'pair']]
+                    lines.append(f"  Market data available for {pair}")
+                    if available_fields:
+                        lines.append(f"  Available fields: {', '.join(available_fields[:5])}")
                 
                 if "change_24h" in ticker:
                     change = ticker["change_24h"]
@@ -327,7 +331,11 @@ class DataFormatter:
                         try:
                             lines.append(f"    Current Price: ${float(price):.2f}")
                         except (ValueError, TypeError):
-                            pass
+                            # 如果转换失败，至少显示原始值
+                            lines.append(f"    Current Price: {price} (raw)")
+                    else:
+                        # 即使没有price，也显示ticker数据存在
+                        lines.append(f"    Market data available (price field not found)")
                     
                     if "change_24h" in ticker:
                         change = ticker["change_24h"]
@@ -363,5 +371,7 @@ class DataFormatter:
                     lines.append(f"  ... and {len(trade_pairs) - 10} more pairs available")
         
         return "\n".join(lines) if lines else "No market data available"
+
+
 
 
