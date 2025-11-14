@@ -84,8 +84,17 @@ class BaseAgent(threading.Thread):
         
         # 主循环：轮询市场数据与对话消息
         loop_count = 0
+        start_time = time.time()
+        last_status_log = time.time()
         while not self._stopped:
             loop_count += 1
+            current_time = time.time()
+            
+            # 每10秒打印一次状态，确保Agent在运行
+            if current_time - last_status_log >= 10.0:
+                queue_size = self.market_sub._q.qsize() if hasattr(self.market_sub._q, 'qsize') else 'N/A'
+                print(f"[{self.name}] 💓 Agent运行中... (循环{loop_count}次, 队列大小={queue_size}, 已运行{int(current_time - start_time)}秒)")
+                last_status_log = current_time
             # 接收市场数据（使用较短的timeout，但循环接收，确保不遗漏消息）
             # 连续接收多个消息，直到没有更多消息
             received_any = False
@@ -104,6 +113,9 @@ class BaseAgent(threading.Thread):
                     scan_count += 1
                     msg_type = market_msg.get("type", "unknown")
                     is_complete = market_msg.get("is_complete", False)
+                    # 调试：打印接收到的消息类型（只打印前几条，避免日志过多）
+                    if scan_count <= 3 or is_complete or msg_type == "complete_market_snapshot":
+                        print(f"[{self.name}] 📨 收到消息 #{scan_count}: type={msg_type}, is_complete={is_complete}")
                     if is_complete or msg_type == "complete_market_snapshot":
                         # 找到完整快照，立即处理
                         print(f"[{self.name}] 🔔 检测到完整快照消息，立即处理... (扫描了{scan_count}条消息)")
