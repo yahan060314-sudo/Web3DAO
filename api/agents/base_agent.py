@@ -80,11 +80,17 @@ class BaseAgent(threading.Thread):
     def run(self):
         # 主循环：轮询市场数据与对话消息
         while not self._stopped:
-            # 接收市场数据
-            market_msg = self.market_sub.recv(timeout=self.poll_timeout)
-            if market_msg is not None:
-                self._handle_market_data(market_msg)
-
+            # 接收市场数据（使用较短的timeout，但循环接收，确保不遗漏消息）
+            # 连续接收多个消息，直到没有更多消息
+            received_any = False
+            for _ in range(10):  # 最多连续接收10条消息
+                market_msg = self.market_sub.recv(timeout=0.1)
+                if market_msg is not None:
+                    self._handle_market_data(market_msg)
+                    received_any = True
+                else:
+                    break  # 没有更多消息，退出循环
+            
             # 接收对话消息
             dialog_msg = self.dialog_sub.recv(timeout=0.01)
             if dialog_msg is not None:
@@ -97,7 +103,8 @@ class BaseAgent(threading.Thread):
                 self._last_decision_ts = now
 
             # 简单节流，避免忙等
-            time.sleep(0.01)
+            if not received_any:
+                time.sleep(0.01)
     
     def _handle_market_data(self, msg: Dict[str, Any]) -> None:
         """
@@ -123,6 +130,9 @@ class BaseAgent(threading.Thread):
         elif data_type == "exchange_info":
             # 更新交易所信息（包含所有可用交易对）
             self.current_exchange_info = msg
+        else:
+            # 调试：打印未知类型的消息
+            print(f"[{self.name}] ⚠️ 收到未知类型的市场数据: type={data_type}, keys={list(msg.keys())[:5]}")
         
         # 创建综合市场快照（包含所有ticker数据）
         # 使用tickers字典格式，而不是单个ticker
@@ -135,10 +145,12 @@ class BaseAgent(threading.Thread):
             exchange_info=getattr(self, 'current_exchange_info', None)
         )
         
-        # 调试：确认快照已创建
+        # 调试：确认快照已创建（只在有ticker数据时打印，避免日志过多）
         if self.last_market_snapshot and tickers_dict:
             ticker_count = len(tickers_dict)
-            print(f"[{self.name}] ✓ 市场快照已更新: {ticker_count}个ticker, balance={'有' if self.current_balance else '无'}")
+            # 只在ticker数量变化或收到balance时打印
+            if ticker_count <= 5 or self.current_balance:
+                print(f"[{self.name}] ✓ 市场快照已更新: {ticker_count}个ticker, balance={'有' if self.current_balance else '无'}")
 
     def _handle_dialog(self, msg: Dict[str, Any]) -> None:
         """
@@ -168,6 +180,16 @@ class BaseAgent(threading.Thread):
         
         # 构建决策提示词
         market_text = self.formatter.format_for_llm(self.last_market_snapshot)
+        
+        # 调试：检查格式化后的市场数据
+        if not market_text or market_text == "No market data available":
+            ticker_count = len(self.current_tickers) if self.current_tickers else 0
+            has_balance = self.current_balance is not None
+            print(f"[{self.name}] ⚠️ 市场数据格式化后为空 - tickers: {ticker_count}, balance: {has_balance}")
+            print(f"[{self.name}] ⚠️ 快照keys: {list(self.last_market_snapshot.keys())}")
+            if self.last_market_snapshot.get("tickers"):
+                print(f"[{self.name}] ⚠️ tickers类型: {type(self.last_market_snapshot.get('tickers'))}, 数量: {len(self.last_market_snapshot.get('tickers', {}))}")
+        
         user_prompt = f"""Current market situation:
 {market_text}
 
@@ -212,6 +234,13 @@ Based on this information, what trading action do you recommend? Provide your de
         # 添加市场数据上下文
         if self.last_market_snapshot is not None:
             market_text = self.formatter.format_for_llm(self.last_market_snapshot)
+            
+            # 调试：检查格式化后的市场数据
+            if not market_text or market_text == "No market data available":
+                ticker_count = len(self.current_tickers) if self.current_tickers else 0
+                has_balance = self.current_balance is not None
+                print(f"[{self.name}] ⚠️ 市场数据格式化后为空 - tickers: {ticker_count}, balance: {has_balance}")
+                print(f"[{self.name}] ⚠️ 快照内容: {list(self.last_market_snapshot.keys())}")
             
             # 构建资金和持仓信息
             info_parts = []
@@ -357,4 +386,7 @@ Based on this information, what trading action do you recommend? Provide your de
             pass
         
         return False
+
+
+ 
 
