@@ -453,32 +453,23 @@ def main():
     logger.info("\n[11] 发送初始交易提示（供Agent后续决策使用）...")
     market_snapshot = collector.get_latest_snapshot()
     if market_snapshot:
-        # 创建强制要求交易的提示
+        # 创建初始交易提示（不再强制立即下单）
         market_text = prompt_mgr.formatter.format_for_llm(market_snapshot)
         current_price = None
         if market_snapshot.get("ticker") and market_snapshot["ticker"].get("price"):
             current_price = market_snapshot["ticker"]["price"]
         
-        initial_prompt = f"""You MUST make a trading decision NOW. This is a MANDATORY initial trade.
+        initial_prompt = f"""Review the current market snapshot and determine if a trade is warranted.
 
 Current Market Data:
 {market_text}
 
-CRITICAL REQUIREMENT - You MUST choose either "open_long" (BUY) or "close_long" (SELL):
-- DO NOT choose "wait" or "hold" for this initial decision
-- Based on the current market data, make a concrete trading decision
-- Confidence threshold is LOWERED to 60% for initial decisions - you don't need perfect certainty
-- If price seems reasonable or even slightly favorable, choose "open_long" to start trading
-- If you have concerns, still make a decision with smaller position size (e.g., 300-500 USD)
-- This is the system's first decision - you MUST take action, not wait
-- Remember: Acting with 60% confidence is better than waiting indefinitely
+Guidelines:
+- Preferred confidence threshold: 60% or higher
+- If no clear opportunity exists, you may choose "wait" with rationale
+- If you identify a reasonable opportunity, specify the action and position size
 
-RELAXED THRESHOLDS FOR INITIAL DECISION:
-- Confidence: 60%+ is sufficient (not 85%+)
-- Market clarity: Reasonable data is enough (don't wait for perfect signals)
-- Risk: Use smaller position size if uncertain (300-500 USD instead of 1000+)
-
-Required JSON format (choose ONE):
+Example formats (choose the one that fits your analysis or provide your own structured JSON):
 {{
   "action": "open_long",
   "symbol": "BTCUSDT",
@@ -498,8 +489,13 @@ OR if you believe market is declining:
   "reasoning": "Initial trading decision - market conditions suggest selling"
 }}
 
-You MUST output one of these actions. "wait" or "hold" is NOT acceptable for this initial decision.
-Even if you're only 60% confident, you MUST make a decision."""
+If you conclude no trade should be made right now, respond with:
+{{
+  "action": "wait",
+  "symbol": "BTCUSDT",
+  "confidence": 60,
+  "reasoning": "Why you prefer to wait based on current data"
+}}"""
         
         mgr.broadcast_prompt(role="user", content=initial_prompt)
         logger.info("✓ 初始交易提示已发送（供Agent后续决策使用）")
@@ -611,4 +607,5 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
 
