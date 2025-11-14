@@ -115,6 +115,9 @@ class BaseAgent(threading.Thread):
                     else:
                         # 暂存其他消息
                         pending_messages.append(market_msg)
+                        # 如果积压消息太多，打印警告
+                        if len(pending_messages) > 50 and scan_count % 50 == 0:
+                            print(f"[{self.name}] ⚠️ 消息积压: {len(pending_messages)}条待处理消息，仍在寻找完整快照...")
                 else:
                     # 队列为空
                     empty_count += 1
@@ -141,29 +144,57 @@ class BaseAgent(threading.Thread):
                             break
             
             # 如果没有找到完整快照，处理所有待处理的消息
+            # 但在处理过程中，也要持续检查是否有完整快照到达
             if not complete_snapshot_received:
                 if len(pending_messages) > 0:
                     print(f"[{self.name}] 📥 处理 {len(pending_messages)} 条待处理消息（未找到完整快照）")
-                for msg in pending_messages:
-                    self._handle_market_data(msg)
-                    received_any = True
                 
-                # 处理完所有消息后，再等待一下，确保没有遗漏完整快照
-                if len(pending_messages) > 0:
-                    # 等待0.5秒，看看是否有完整快照到达
-                    market_msg = self.market_sub.recv(timeout=0.5)
+                # 分批处理待处理消息，每处理一批就检查是否有完整快照
+                batch_size = 10
+                for i in range(0, len(pending_messages), batch_size):
+                    batch = pending_messages[i:i+batch_size]
+                    for msg in batch:
+                        self._handle_market_data(msg)
+                        received_any = True
+                    
+                    # 每处理一批后，快速检查是否有完整快照到达
+                    market_msg = self.market_sub.recv(timeout=0.1)
                     if market_msg is not None:
                         msg_type = market_msg.get("type", "unknown")
                         is_complete = market_msg.get("is_complete", False)
                         if is_complete or msg_type == "complete_market_snapshot":
-                            print(f"[{self.name}] 🔔 检测到完整快照消息（在处理完其他消息后），立即处理...")
+                            print(f"[{self.name}] 🔔 检测到完整快照消息（在处理待处理消息时），立即处理...")
                             self._handle_market_data(market_msg)
                             complete_snapshot_received = True
                             received_any = True
+                            # 找到完整快照后，停止处理剩余消息
+                            break
                         else:
                             # 不是完整快照，也处理它
                             self._handle_market_data(market_msg)
                             received_any = True
+                
+                # 处理完所有消息后，再等待一下，确保没有遗漏完整快照
+                if not complete_snapshot_received:
+                    # 等待更长时间，确保完整快照有时间到达
+                    for _ in range(5):  # 尝试5次，每次0.2秒
+                        market_msg = self.market_sub.recv(timeout=0.2)
+                        if market_msg is not None:
+                            msg_type = market_msg.get("type", "unknown")
+                            is_complete = market_msg.get("is_complete", False)
+                            if is_complete or msg_type == "complete_market_snapshot":
+                                print(f"[{self.name}] 🔔 检测到完整快照消息（在处理完其他消息后），立即处理...")
+                                self._handle_market_data(market_msg)
+                                complete_snapshot_received = True
+                                received_any = True
+                                break
+                            else:
+                                # 不是完整快照，也处理它
+                                self._handle_market_data(market_msg)
+                                received_any = True
+                        else:
+                            # 如果队列为空，继续等待
+                            continue
             
             # 接收对话消息
             dialog_msg = self.dialog_sub.recv(timeout=0.01)
