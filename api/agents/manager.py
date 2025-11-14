@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 
 from .bus import MessageBus
 from .base_agent import BaseAgent
+from .capital_manager import CapitalManager
 
 
 class AgentManager:
@@ -15,13 +16,14 @@ class AgentManager:
     - 从决策主题收集各 Agent 的决策
     """
 
-    def __init__(self):
+    def __init__(self, capital_manager: Optional[CapitalManager] = None):
         self.bus = MessageBus()
         self.market_topic = "market_ticks"
         self.dialog_topic = "dialog_prompts"
         self.decision_topic = "decisions"
         self.agents: List[BaseAgent] = []
         self._stop = False
+        self.capital_manager = capital_manager
 
     def add_agent(self, 
                   name: str, 
@@ -45,7 +47,8 @@ class AgentManager:
             decision_topic=self.decision_topic,
             system_prompt=system_prompt,
             llm_provider=llm_provider,
-            allocated_capital=allocated_capital
+            allocated_capital=allocated_capital,
+            capital_manager=self.capital_manager
         )
         self.agents.append(agent)
 
