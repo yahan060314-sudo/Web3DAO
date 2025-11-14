@@ -198,9 +198,15 @@ class MarketDataCollector(threading.Thread):
         print(f"  - 快照keys: {list(complete_snapshot.keys())[:10]}")
         
         # 发布完整快照
+        print(f"[MarketDataCollector] 📤 正在发布完整市场快照到消息总线 (topic: {self.market_topic})...")
         self.bus.publish(self.market_topic, complete_snapshot)
         print(f"[MarketDataCollector] ✓ 已发布完整市场快照到消息总线: {len(self._last_tickers)}/{len(self.pairs)} 个交易对已采集")
+        print(f"[MarketDataCollector] 📋 快照消息内容: type={complete_snapshot.get('type')}, is_complete={complete_snapshot.get('is_complete')}, tickers数量={len(complete_snapshot.get('tickers', {}))}")
         self._last_complete_snapshot_time = time.time()
+        
+        # 给Agent一些时间接收消息（避免消息还在队列中时就开始等待）
+        print(f"[MarketDataCollector] ⏸️ 等待1秒，让Agent有时间接收完整快照消息...")
+        time.sleep(1.0)
         
         # 如果启用了等待决策功能，等待Agent分析并做出决策
         if self.wait_for_decisions and self._decision_subscription:
@@ -259,6 +265,7 @@ class MarketDataCollector(threading.Thread):
             tickers=self._last_tickers,  # 返回所有ticker，而不是单个
             balance=self._last_balance
         )
+
 
 
 
