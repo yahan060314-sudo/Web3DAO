@@ -16,7 +16,7 @@ class AgentManager:
     - 从决策主题收集各 Agent 的决策
     """
 
-    def __init__(self, capital_manager: Optional[CapitalManager] = None):
+    def __init__(self, capital_manager: Optional[CapitalManager] = None, position_tracker=None):
         self.bus = MessageBus()
         self.market_topic = "market_ticks"
         self.dialog_topic = "dialog_prompts"
@@ -24,6 +24,7 @@ class AgentManager:
         self.agents: List[BaseAgent] = []
         self._stop = False
         self.capital_manager = capital_manager
+        self.position_tracker = position_tracker
 
     def add_agent(self, 
                   name: str, 
@@ -48,7 +49,8 @@ class AgentManager:
             system_prompt=system_prompt,
             llm_provider=llm_provider,
             allocated_capital=allocated_capital,
-            capital_manager=self.capital_manager
+            capital_manager=self.capital_manager,
+            position_tracker=self.position_tracker
         )
         self.agents.append(agent)
 
@@ -146,4 +148,6 @@ class AgentManager:
             "messages": messages,
             "summary_text": summary_text,
         }
+
+
 
