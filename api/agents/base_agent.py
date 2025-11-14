@@ -78,8 +78,14 @@ class BaseAgent(threading.Thread):
         self._stopped = True
 
     def run(self):
+        # Agent启动日志
+        print(f"[{self.name}] 🚀 Agent线程已启动，开始监听市场数据和对话消息...")
+        print(f"[{self.name}] 📡 订阅的topics: market={self.market_sub._q}, dialog={self.dialog_sub._q}")
+        
         # 主循环：轮询市场数据与对话消息
+        loop_count = 0
         while not self._stopped:
+            loop_count += 1
             # 接收市场数据（使用较短的timeout，但循环接收，确保不遗漏消息）
             # 连续接收多个消息，直到没有更多消息
             received_any = False
@@ -87,14 +93,16 @@ class BaseAgent(threading.Thread):
             
             # 第一遍：快速扫描所有消息，寻找完整快照
             pending_messages = []
-            for _ in range(100):  # 增加接收数量，确保不遗漏完整快照
-                market_msg = self.market_sub.recv(timeout=0.05)
+            scan_count = 0
+            for _ in range(200):  # 增加接收数量，确保不遗漏完整快照
+                market_msg = self.market_sub.recv(timeout=0.1)  # 增加timeout，给消息更多时间到达
                 if market_msg is not None:
+                    scan_count += 1
                     msg_type = market_msg.get("type", "unknown")
                     is_complete = market_msg.get("is_complete", False)
                     if is_complete or msg_type == "complete_market_snapshot":
                         # 找到完整快照，立即处理
-                        print(f"[{self.name}] 🔔 检测到完整快照消息，立即处理...")
+                        print(f"[{self.name}] 🔔 检测到完整快照消息，立即处理... (扫描了{scan_count}条消息)")
                         self._handle_market_data(market_msg)
                         complete_snapshot_received = True
                         received_any = True
@@ -104,6 +112,21 @@ class BaseAgent(threading.Thread):
                         # 暂存其他消息
                         pending_messages.append(market_msg)
                 else:
+                    # 没有更多消息，但如果还在等待完整快照，继续等待一段时间
+                    if not complete_snapshot_received and len(pending_messages) == 0:
+                        # 队列为空，但可能完整快照还没到达，再等待一下
+                        market_msg = self.market_sub.recv(timeout=0.5)
+                        if market_msg is not None:
+                            msg_type = market_msg.get("type", "unknown")
+                            is_complete = market_msg.get("is_complete", False)
+                            if is_complete or msg_type == "complete_market_snapshot":
+                                print(f"[{self.name}] 🔔 检测到完整快照消息（延迟到达），立即处理...")
+                                self._handle_market_data(market_msg)
+                                complete_snapshot_received = True
+                                received_any = True
+                                break
+                            else:
+                                pending_messages.append(market_msg)
                     break  # 没有更多消息，退出循环
             
             # 如果没有找到完整快照，处理所有待处理的消息
@@ -126,6 +149,12 @@ class BaseAgent(threading.Thread):
             # 简单节流，避免忙等
             if not received_any:
                 time.sleep(0.01)
+            
+            # 每1000次循环打印一次状态（调试用）
+            if loop_count % 1000 == 0:
+                ticker_count = len(self.current_tickers) if self.current_tickers else 0
+                has_snapshot = self.last_market_snapshot is not None
+                print(f"[{self.name}] 🔄 运行中... (循环{loop_count}次, tickers={ticker_count}, 快照={'有' if has_snapshot else '无'})")
     
     def _handle_market_data(self, msg: Dict[str, Any]) -> None:
         """
