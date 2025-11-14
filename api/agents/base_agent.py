@@ -83,9 +83,14 @@ class BaseAgent(threading.Thread):
             # 接收市场数据（使用较短的timeout，但循环接收，确保不遗漏消息）
             # 连续接收多个消息，直到没有更多消息
             received_any = False
-            for _ in range(10):  # 最多连续接收10条消息
+            for _ in range(50):  # 增加接收数量，确保不遗漏完整快照（最多连续接收50条消息）
                 market_msg = self.market_sub.recv(timeout=0.1)
                 if market_msg is not None:
+                    # 检查是否是完整快照（优先处理）
+                    msg_type = market_msg.get("type", "unknown")
+                    is_complete = market_msg.get("is_complete", False)
+                    if is_complete or msg_type == "complete_market_snapshot":
+                        print(f"[{self.name}] 🔔 检测到完整快照消息，立即处理...")
                     self._handle_market_data(market_msg)
                     received_any = True
                 else:
@@ -120,6 +125,7 @@ class BaseAgent(threading.Thread):
         
         if is_complete_snapshot:
             # 收到完整市场快照，直接使用它
+            print(f"[{self.name}] 🔔 收到完整市场快照消息！type={data_type}, is_complete={msg.get('is_complete')}")
             self.last_market_snapshot = msg
             ticker_count = len(msg.get("tickers", {})) if isinstance(msg.get("tickers"), dict) else 0
             total_pairs = msg.get("total_pairs_collected", 0)
@@ -128,8 +134,10 @@ class BaseAgent(threading.Thread):
             # 更新内部的ticker和balance数据
             if "tickers" in msg and isinstance(msg["tickers"], dict):
                 self.current_tickers = msg["tickers"]
+                print(f"[{self.name}] ✓ 已更新内部ticker数据: {len(self.current_tickers)}个交易对")
             if "balance" in msg:
                 self.current_balance = msg["balance"]
+                print(f"[{self.name}] ✓ 已更新余额数据")
             
             # 收到完整快照后，立即触发决策生成（分析所有交易对）
             print(f"[{self.name}] 🎯 完整快照已接收，准备分析所有交易对并生成决策...")
