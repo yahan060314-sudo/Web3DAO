@@ -87,6 +87,53 @@ class PromptManager:
         if risk_level is None:
             risk_level = "moderate"
         
+        # 优先使用 natural_language_prompt.txt 模板（如果已加载）
+        if self.spot_trading_template:
+            try:
+                from datetime import datetime
+                # 准备占位符数据
+                placeholder_data = {
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "account_equity": "（将从市场数据中获取）",
+                    "available_cash": "（将从市场数据中获取）",
+                    "positions": "（将从持仓跟踪中获取）",
+                    "price_series": "（将从市场数据中获取）",
+                    "volume_series": "（将从市场数据中获取）",
+                    "recent_sharpe": "（将从绩效数据中获取）",
+                    "recent_sortino": "（将从绩效数据中获取）",
+                    "recent_calmar": "（将从绩效数据中获取）",
+                    "max_drawdown": "（将从绩效数据中获取）",
+                    "trade_stats": "（将从交易历史中获取）",
+                    "STOP_SIGNAL": "__STOP__"
+                }
+                
+                # 使用模板并填充占位符
+                # 使用更安全的替换方式，避免与JSON示例中的花括号冲突
+                template_prompt = self.spot_trading_template
+                for key, value in placeholder_data.items():
+                    # 只替换独立的占位符，避免替换JSON示例中的花括号
+                    placeholder_pattern = f"{{{key}}}"
+                    template_prompt = template_prompt.replace(placeholder_pattern, str(value))
+                
+                # 添加Agent名称和风险等级信息（如果模板中没有）
+                if agent_name and f"You are {agent_name}" not in template_prompt:
+                    # 在开头添加Agent个性化信息
+                    agent_info = f"""# Agent Information
+- Agent Name: {agent_name}
+- Risk Level: {risk_level.upper()}
+"""
+                    if trading_strategy:
+                        agent_info += f"- Trading Strategy: {trading_strategy}\n"
+                    agent_info += "\n"
+                    template_prompt = agent_info + template_prompt
+                
+                print(f"[PromptManager] ✓ 使用 natural_language_prompt.txt 模板（风险等级: {risk_level}）")
+                return template_prompt
+            except Exception as e:
+                print(f"[PromptManager] ⚠️ 使用模板时出错: {e}，回退到动态生成")
+                # 如果出错，继续使用动态生成方式
+        
+        # 回退到动态生成方式（原有逻辑）
         base_prompt = f"""You are {agent_name}, an AI trading assistant for Web3 quantitative trading.
 
 Your responsibilities:
@@ -550,4 +597,5 @@ What opportunities do you see?"""
             recent_sharpe=recent_sharpe,
             trade_stats=trade_stats
         )
+
 
