@@ -40,7 +40,8 @@ class BaseAgent(threading.Thread):
                  decision_interval: float = 60.0,
                  llm_provider: Optional[str] = None,
                  allocated_capital: Optional[float] = None,
-                 capital_manager: Optional[CapitalManager] = None):
+                 capital_manager: Optional[CapitalManager] = None,
+                 position_tracker=None):
         super().__init__(name=name)
         self.daemon = True
         self.bus = bus
@@ -59,6 +60,7 @@ class BaseAgent(threading.Thread):
         # 支持指定资金额度
         self.allocated_capital = allocated_capital
         self.capital_manager = capital_manager
+        self.position_tracker = position_tracker
         
         self.formatter = DataFormatter()
 
@@ -196,6 +198,11 @@ Based on this information, what trading action do you recommend? Provide your de
         # 添加市场数据上下文
         if self.last_market_snapshot is not None:
             market_text = self.formatter.format_for_llm(self.last_market_snapshot)
+            
+            # 构建资金和持仓信息
+            info_parts = []
+            
+            # 1. 资金信息
             capital_info = ""
             allocated = self.allocated_capital
             available = None
@@ -218,9 +225,43 @@ Based on this information, what trading action do you recommend? Provide your de
                 capital_lines.append("   The account balance shown above is shared with other agents.")
                 capital_lines.append("   Base your position sizes on YOUR available capital, not the total account balance.")
                 capital_info = "\n".join(capital_lines)
+            
+            # 2. 持仓信息（如果启用了持仓跟踪）
+            position_info = ""
+            if self.position_tracker:
+                # 从市场快照中提取当前价格，用于计算持仓价值
+                current_prices = {}
+                if self.last_market_snapshot.get("tickers"):
+                    tickers = self.last_market_snapshot["tickers"]
+                    if isinstance(tickers, dict):
+                        for pair, ticker_data in tickers.items():
+                            if isinstance(ticker_data, dict) and "price" in ticker_data:
+                                # 提取币种：BTC/USD -> BTC
+                                base_currency = pair.split("/")[0] if "/" in pair else pair.replace("USD", "").replace("USDT", "")
+                                current_prices[base_currency] = float(ticker_data["price"])
+                    elif isinstance(tickers, list) and len(tickers) > 0:
+                        ticker = tickers[0]
+                        if isinstance(ticker, dict) and "price" in ticker:
+                            pair = ticker.get("pair", "")
+                            base_currency = pair.split("/")[0] if "/" in pair else pair.replace("USD", "").replace("USDT", "")
+                            current_prices[base_currency] = float(ticker["price"])
+                
+                # 格式化持仓信息
+                position_info = self.position_tracker.format_positions_for_llm(
+                    agent_name=self.name,
+                    current_prices=current_prices if current_prices else None
+                )
+            
+            # 组合所有信息
+            combined_info = market_text
+            if capital_info:
+                combined_info += "\n" + capital_info
+            if position_info:
+                combined_info += "\n\n" + position_info
+            
             messages.append({
                 "role": "system",
-                "content": f"Current Market Data:\n{market_text}{capital_info}"
+                "content": f"Current Market Data:\n{combined_info}"
             })
         
         # 添加最近的对话历史（控制上下文长度）
