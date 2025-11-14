@@ -19,7 +19,7 @@ class TradeExecutor(threading.Thread):
     - 改进的自然语言解析（处理模糊表达）
     """
 
-    def __init__(self, bus: MessageBus, decision_topic: str, default_pair: str = "BTC/USD", dry_run: bool = False):
+    def __init__(self, bus: MessageBus, decision_topic: str, default_pair: str = "BTC/USD", dry_run: bool = False, position_tracker=None):
         """
         初始化交易执行器
         
@@ -28,6 +28,7 @@ class TradeExecutor(threading.Thread):
             decision_topic: 决策topic名称
             default_pair: 默认交易对
             dry_run: 如果为True，只打印下单参数，不真正下单（用于测试）
+            position_tracker: 持仓跟踪器（可选）
         """
         super().__init__(name="TradeExecutor")
         self.daemon = True
@@ -77,6 +78,9 @@ class TradeExecutor(threading.Thread):
             self.max_trade_usd = float(os.getenv("MAX_TRADE_USD", "500"))
         except ValueError:
             self.max_trade_usd = 500.0
+        
+        # 持仓跟踪器
+        self.position_tracker = position_tracker
 
     def stop(self):
         self._stopped = True
@@ -403,6 +407,36 @@ class TradeExecutor(threading.Thread):
                             status = order_detail.get('Status')
                             if order_id:
                                 print(f"[Executor] 📝 订单ID: {order_id}, 状态: {status}")
+                            
+                            # 更新持仓跟踪器（如果订单已成交或部分成交）
+                            if self.position_tracker and status in ['FILLED', 'PARTIALLY_FILLED']:
+                                try:
+                                    # 从订单详情中提取实际成交信息
+                                    filled_quantity = float(order_detail.get('FilledQuantity', quantity))
+                                    filled_price = float(order_detail.get('FilledAverPrice', price if price else 0))
+                                    
+                                    # 如果订单已成交，使用实际成交价格；否则使用下单价格
+                                    actual_price = filled_price if filled_price > 0 else (price if price else None)
+                                    
+                                    # 计算USD金额
+                                    if actual_price:
+                                        usd_amount = filled_quantity * actual_price
+                                    else:
+                                        # 如果没有价格，使用估算值
+                                        usd_amount = est_order_usd if est_order_usd else (filled_quantity * 100000)  # 默认价格估算
+                                    
+                                    # 记录交易到持仓跟踪器
+                                    self.position_tracker.record_trade(
+                                        agent_name=agent,
+                                        side=side,
+                                        pair=pair,
+                                        quantity=filled_quantity,
+                                        price=actual_price,
+                                        usd_amount=usd_amount,
+                                        order_id=str(order_id) if order_id else None
+                                    )
+                                except Exception as e:
+                                    print(f"[Executor] ⚠️ 更新持仓跟踪失败: {e}")
                     else:
                         # 订单失败
                         err_msg = resp.get('ErrMsg', 'Unknown error')
