@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 from api.llm_clients.factory import get_llm_client
 from .bus import MessageBus, Subscription
 from .data_formatter import DataFormatter
+from .capital_manager import CapitalManager
 
 # 导入决策频率限制器
 project_root = Path(__file__).parent.parent.parent
@@ -38,7 +39,8 @@ class BaseAgent(threading.Thread):
                  poll_timeout: float = 1.0,
                  decision_interval: float = 60.0,
                  llm_provider: Optional[str] = None,
-                 allocated_capital: Optional[float] = None):
+                 allocated_capital: Optional[float] = None,
+                 capital_manager: Optional[CapitalManager] = None):
         super().__init__(name=name)
         self.daemon = True
         self.bus = bus
@@ -56,6 +58,7 @@ class BaseAgent(threading.Thread):
         
         # 支持指定资金额度
         self.allocated_capital = allocated_capital
+        self.capital_manager = capital_manager
         
         self.formatter = DataFormatter()
 
@@ -193,9 +196,31 @@ Based on this information, what trading action do you recommend? Provide your de
         # 添加市场数据上下文
         if self.last_market_snapshot is not None:
             market_text = self.formatter.format_for_llm(self.last_market_snapshot)
+            capital_info = ""
+            allocated = self.allocated_capital
+            available = None
+            used = None
+            if self.capital_manager:
+                allocated = self.capital_manager.get_allocated_capital(self.name)
+                available = self.capital_manager.get_available_capital(self.name)
+                used = self.capital_manager.get_used_capital(self.name)
+            if allocated is not None:
+                capital_lines = [
+                    "",
+                    "",
+                    f"💰 Your Allocated Capital: ${allocated:.2f} USD"
+                ]
+                if available is not None:
+                    capital_lines.append(f"   Available Capital: ${available:.2f} USD")
+                if used is not None:
+                    capital_lines.append(f"   Currently Reserved/Used: ${used:.2f} USD")
+                capital_lines.append("⚠️ IMPORTANT: These figures reflect YOUR personal allocation.")
+                capital_lines.append("   The account balance shown above is shared with other agents.")
+                capital_lines.append("   Base your position sizes on YOUR available capital, not the total account balance.")
+                capital_info = "\n".join(capital_lines)
             messages.append({
                 "role": "system",
-                "content": f"Current Market Data:\n{market_text}"
+                "content": f"Current Market Data:\n{market_text}{capital_info}"
             })
         
         # 添加最近的对话历史（控制上下文长度）
@@ -225,10 +250,21 @@ Based on this information, what trading action do you recommend? Provide your de
                 "allocated_capital": self.allocated_capital,  # 添加资金额度信息
                 "llm_provider": self.llm_provider  # 添加LLM提供商信息
             }
+            if self.capital_manager:
+                decision["capital_info"] = {
+                    "allocated": self.capital_manager.get_allocated_capital(self.name),
+                    "available": self.capital_manager.get_available_capital(self.name),
+                    "used": self.capital_manager.get_used_capital(self.name)
+                }
             self.bus.publish(self.decision_topic, decision)
             print(f"[{self.name}] Published decision: {decision_text[:100]}")
-            if self.allocated_capital:
-                print(f"[{self.name}] 资金额度: {self.allocated_capital:.2f} USD")
+            if self.capital_manager:
+                allocated = self.capital_manager.get_allocated_capital(self.name)
+                available = self.capital_manager.get_available_capital(self.name)
+                used = self.capital_manager.get_used_capital(self.name)
+                print(f"[{self.name}] 资金概览: 分配={allocated:.2f} USD, 可用={available:.2f} USD, 已占用={used:.2f} USD")
+            elif self.allocated_capital:
+                print(f"[{self.name}] 分配资金: {self.allocated_capital:.2f} USD (初始分配，实际余额需从API获取)")
         except Exception as e:
             print(f"[{self.name}] Error generating decision: {e}")
     
