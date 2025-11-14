@@ -335,7 +335,7 @@ def main():
     
     # 4. 创建Agent管理器
     logger.info("\n[1] 创建Agent管理器...")
-    mgr = AgentManager()
+    mgr = AgentManager(capital_manager=capital_manager)
     
     # 5. 创建Prompt管理器
     logger.info("[2] 创建Prompt管理器...")
@@ -449,61 +449,8 @@ def main():
     logger.info("\n[10] 等待初始市场数据...")
     time.sleep(8)
     
-    # 13. 手动创建初始买入决策（启动比赛）
-    logger.info("[11] 创建手动初始买入决策（启动比赛）...")
-    market_snapshot = collector.get_latest_snapshot()
-    if market_snapshot:
-        # 获取当前价格
-        current_price = 100000.0  # 默认价格
-        if market_snapshot.get("ticker") and market_snapshot["ticker"].get("price"):
-            current_price = market_snapshot["ticker"]["price"]
-        
-        # 手动设计初始买入决策：小额买入，启动比赛
-        initial_position_size_usd = 500.0  # 小额买入：500 USD
-        initial_quantity = initial_position_size_usd / current_price  # 计算BTC数量
-        initial_quantity = round(initial_quantity, 8)  # 保留8位小数
-        
-        # 创建JSON格式的决策（确保格式与executor期望的一致）
-        import json
-        initial_decision_json = {
-            "action": "open_long",  # 买入动作
-            "symbol": "BTCUSDT",  # 交易对符号
-            "price_ref": current_price,  # 参考价格
-            "position_size_usd": initial_position_size_usd,  # 仓位大小（USD）
-            "quantity": initial_quantity,  # BTC数量（executor会优先使用这个）
-            "confidence": 100,  # 手动决策，100%信心
-            "reasoning": "Manual initial decision: Starting the competition with a small position to activate trading system."
-        }
-        initial_decision_text = json.dumps(initial_decision_json, ensure_ascii=False)
-        
-        # 创建决策消息
-        initial_decision_msg = {
-            "agent": "system_initializer",  # 标记为系统初始化决策
-            "decision": initial_decision_text,
-            "market_snapshot": market_snapshot,
-            "timestamp": time.time(),
-            "json_valid": True,
-            "allocated_capital": initial_capital / 2,  # 使用agent_1的资金额度
-            "llm_provider": "manual"  # 标记为手动决策
-        }
-        
-        # 发布到消息总线
-        mgr.bus.publish(mgr.decision_topic, initial_decision_msg)
-        logger.info("=" * 80)
-        logger.info("✓ 手动初始买入决策已发布")
-        logger.info("=" * 80)
-        logger.info(f"  交易对: BTC/USD")
-        logger.info(f"  方向: BUY (open_long)")
-        logger.info(f"  数量: {initial_quantity:.8f} BTC")
-        logger.info(f"  金额: {initial_position_size_usd:.2f} USD")
-        logger.info(f"  参考价格: {current_price:.2f} USD")
-        logger.info(f"  订单类型: MARKET (市价单)")
-        logger.info("=" * 80)
-        logger.info("等待执行器处理初始决策...")
-        time.sleep(3)  # 等待执行器处理
-    
-    # 14. 发送初始交易提示（给Agent后续决策使用）
-    logger.info("\n[12] 发送初始交易提示（供Agent后续决策使用）...")
+    # 13. 发送初始交易提示（给Agent后续决策使用）
+    logger.info("\n[11] 发送初始交易提示（供Agent后续决策使用）...")
     market_snapshot = collector.get_latest_snapshot()
     if market_snapshot:
         # 创建强制要求交易的提示
@@ -557,7 +504,7 @@ Even if you're only 60% confident, you MUST make a decision."""
         mgr.broadcast_prompt(role="user", content=initial_prompt)
         logger.info("✓ 初始交易提示已发送（供Agent后续决策使用）")
     
-    # 15. 主循环
+    # 14. 主循环
     logger.info("\n" + "=" * 80)
     logger.info("系统运行中...")
     logger.info("=" * 80)
@@ -664,3 +611,4 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
