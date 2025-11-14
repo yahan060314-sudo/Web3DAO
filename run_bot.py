@@ -37,6 +37,7 @@ from api.agents.executor import TradeExecutor
 from api.agents.market_collector import MarketDataCollector
 from api.agents.prompt_manager import PromptManager
 from api.agents.capital_manager import CapitalManager
+from api.agents.position_tracker import PositionTracker
 from api.roostoo_client import RoostooClient
 from api.llm_clients.factory import get_llm_client
 
@@ -319,16 +320,20 @@ def main():
     initial_capital = get_initial_capital_from_api()
     capital_manager = CapitalManager(initial_capital=initial_capital)
     
-    # 4. 创建Agent管理器
-    logger.info("\n[1] 创建Agent管理器...")
-    mgr = AgentManager(capital_manager=capital_manager)
+    # 4. 创建持仓跟踪器
+    logger.info("\n[1] 创建持仓跟踪器...")
+    position_tracker = PositionTracker()
     
-    # 5. 创建Prompt管理器
-    logger.info("[2] 创建Prompt管理器...")
+    # 5. 创建Agent管理器
+    logger.info("[2] 创建Agent管理器...")
+    mgr = AgentManager(capital_manager=capital_manager, position_tracker=position_tracker)
+    
+    # 6. 创建Prompt管理器
+    logger.info("[3] 创建Prompt管理器...")
     prompt_mgr = PromptManager()
     
-    # 6. 均分本金给两个Agent
-    logger.info("\n[3] 均分本金给两个Agent...")
+    # 7. 均分本金给两个Agent
+    logger.info("\n[4] 均分本金给两个Agent...")
     agent_names = ["agent_1", "agent_2"]
     allocations = capital_manager.allocate_equal(agent_names)
     capital_manager.print_summary()
@@ -336,8 +341,12 @@ def main():
     agent_1_capital = allocations.get("agent_1", initial_capital / 2)
     agent_2_capital = allocations.get("agent_2", initial_capital / 2)
     
-    # 7. 创建两个Agent的系统提示词
-    logger.info("\n[4] 创建AI Agents...")
+    # 初始化Agent的持仓跟踪
+    position_tracker.initialize_agent("agent_1", agent_1_capital)
+    position_tracker.initialize_agent("agent_2", agent_2_capital)
+    
+    # 8. 创建两个Agent的系统提示词
+    logger.info("\n[5] 创建AI Agents...")
     
     # Agent 1: 使用第一个可用的LLM
     llm_provider_1 = None
@@ -372,8 +381,8 @@ def main():
         risk_level="aggressive"
     )
     
-    # 8. 添加Agent
-    logger.info(f"[5] 添加Agent 1 (LLM: {llm_provider_1}, 资金: {agent_1_capital:.2f} USD)...")
+    # 9. 添加Agent
+    logger.info(f"[6] 添加Agent 1 (LLM: {llm_provider_1}, 资金: {agent_1_capital:.2f} USD)...")
     mgr.add_agent(
         name="agent_1",
         system_prompt=agent_1_prompt,
@@ -381,7 +390,7 @@ def main():
         allocated_capital=agent_1_capital
     )
     
-    logger.info(f"[6] 添加Agent 2 (LLM: {llm_provider_2}, 资金: {agent_2_capital:.2f} USD)...")
+    logger.info(f"[7] 添加Agent 2 (LLM: {llm_provider_2}, 资金: {agent_2_capital:.2f} USD)...")
     mgr.add_agent(
         name="agent_2",
         system_prompt=agent_2_prompt,
@@ -389,12 +398,12 @@ def main():
         allocated_capital=agent_2_capital
     )
     
-    # 9. 启动Agent
-    logger.info("\n[7] 启动Agents...")
+    # 10. 启动Agent
+    logger.info("\n[8] 启动Agents...")
     mgr.start()
     
-    # 10. 创建市场数据采集器
-    logger.info("[8] 启动市场数据采集器...")
+    # 11. 创建市场数据采集器
+    logger.info("[9] 启动市场数据采集器...")
     # 支持通过环境变量覆盖交易对列表：TRADE_PAIRS=BTC/USD,ETH/USD,SOL/USD
     env_pairs = os.getenv("TRADE_PAIRS", "").strip()
     all_usd_pairs = []
@@ -414,8 +423,8 @@ def main():
     )
     collector.start()
     
-    # 11. 创建交易执行器（真实交易模式）
-    logger.info("[9] 启动交易执行器...")
+    # 12. 创建交易执行器（真实交易模式）
+    logger.info("[10] 启动交易执行器...")
     dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
     
     if dry_run:
@@ -427,16 +436,17 @@ def main():
         bus=mgr.bus,
         decision_topic=mgr.decision_topic,
         default_pair="BTC/USD",
-        dry_run=dry_run
+        dry_run=dry_run,
+        position_tracker=position_tracker
     )
     executor.start()
     
-    # 12. 等待初始数据
-    logger.info("\n[10] 等待初始市场数据...")
+    # 13. 等待初始数据
+    logger.info("\n[11] 等待初始市场数据...")
     time.sleep(8)
     
-    # 13. 发送初始交易提示（给Agent后续决策使用）
-    logger.info("\n[11] 发送初始交易提示（供Agent后续决策使用）...")
+    # 14. 发送初始交易提示（给Agent后续决策使用）
+    logger.info("\n[12] 发送初始交易提示（供Agent后续决策使用）...")
     market_snapshot = collector.get_latest_snapshot()
     if market_snapshot:
         # 创建初始交易提示（不再强制立即下单）
@@ -574,6 +584,12 @@ If you conclude no trade should be made right now, respond with:
     logger.info("=" * 80)
     capital_manager.print_summary()
     
+    # 18. 最终持仓摘要
+    logger.info("\n" + "=" * 80)
+    logger.info("最终持仓摘要")
+    logger.info("=" * 80)
+    position_tracker.print_summary()
+    
     logger.info("\n" + "=" * 80)
     logger.info("系统已关闭")
     logger.info("=" * 80)
@@ -592,6 +608,9 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+
 
 
 
