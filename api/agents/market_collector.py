@@ -61,6 +61,10 @@ class MarketDataCollector(threading.Thread):
         # 批处理相关属性（用于处理大量交易对时的分批采集）
         self._current_batch_index = 0
         self._batch_size = 10  # 每批处理的交易对数量，避免一次性请求过多
+        
+        # 完整快照发布相关
+        self._last_complete_snapshot_time = 0  # 上次发布完整快照的时间
+        self._complete_snapshot_interval = 600  # 每10分钟发布一次完整快照（或采集完一轮后）
     
     def stop(self):
         """停止采集器"""
@@ -125,7 +129,11 @@ class MarketDataCollector(threading.Thread):
         # 更新批次索引，循环处理所有交易对
         self._current_batch_index += 1
         batches_needed = (total_pairs + self._batch_size - 1) // self._batch_size
+        
+        # 检查是否完成了一轮采集
         if self._current_batch_index >= batches_needed:
+            # 完成了一轮采集，发布完整的市场快照
+            self._publish_complete_snapshot()
             self._current_batch_index = 0  # 重置，开始新一轮循环
     
     def _collect_balance(self):
@@ -151,6 +159,31 @@ class MarketDataCollector(threading.Thread):
         except Exception as e:
             print(f"[MarketDataCollector] Error fetching balance: {e}")
     
+    def _publish_complete_snapshot(self):
+        """
+        发布完整的市场快照（包含所有已采集的ticker数据）
+        在完成一轮采集后调用，触发Agent进行完整分析
+        """
+        if not self._last_tickers:
+            return  # 没有ticker数据，不发布
+        
+        # 创建完整的市场快照（包含所有ticker）
+        complete_snapshot = self.formatter.create_market_snapshot(
+            tickers=self._last_tickers,  # 使用所有已采集的ticker
+            balance=self._last_balance
+        )
+        
+        # 标记为完整快照
+        complete_snapshot["type"] = "complete_market_snapshot"
+        complete_snapshot["is_complete"] = True
+        complete_snapshot["total_pairs_collected"] = len(self._last_tickers)
+        complete_snapshot["total_pairs_available"] = len(self.pairs)
+        
+        # 发布完整快照
+        self.bus.publish(self.market_topic, complete_snapshot)
+        print(f"[MarketDataCollector] ✓ 发布完整市场快照: {len(self._last_tickers)}/{len(self.pairs)} 个交易对已采集")
+        self._last_complete_snapshot_time = time.time()
+    
     def get_latest_snapshot(self) -> Dict[str, Any]:
         """
         获取最新的市场快照（包含所有ticker和余额）
@@ -159,8 +192,11 @@ class MarketDataCollector(threading.Thread):
             综合市场快照
         """
         return self.formatter.create_market_snapshot(
-            ticker=self._last_tickers.get(self.pairs[0]) if self.pairs else None,
+            tickers=self._last_tickers,  # 返回所有ticker，而不是单个
             balance=self._last_balance
         )
+
+
+
 
 
