@@ -72,6 +72,11 @@ class TradeExecutor(threading.Thread):
         self.cooldown_large_max = int(os.getenv("COOLDOWN_LARGE_MAX", "600"))
         # 记录上次交易推断的USD金额，用于日志
         self._last_order_usd: Optional[float] = None
+        # 交易金额限制
+        try:
+            self.max_trade_usd = float(os.getenv("MAX_TRADE_USD", "500"))
+        except ValueError:
+            self.max_trade_usd = 500.0
 
     def stop(self):
         self._stopped = True
@@ -446,10 +451,13 @@ class TradeExecutor(threading.Thread):
         # 方法1: 尝试解析JSON格式（优先）
         json_parsed = self._parse_json_decision(decision_text)
         if json_parsed:
-            return json_parsed
+            return self._apply_trade_limits(json_parsed, json_parsed.get("json_data"))
         
         # 方法2: 回退到自然语言解析
-        return self._parse_natural_language_decision(decision_text)
+        natural_parsed = self._parse_natural_language_decision(decision_text)
+        if natural_parsed:
+            return self._apply_trade_limits(natural_parsed, None)
+        return None
     
     def _parse_json_decision(self, text: str) -> Optional[Dict[str, Any]]:
         """
@@ -625,6 +633,81 @@ class TradeExecutor(threading.Thread):
         
         return {"side": side, "quantity": quantity, "price": price, "pair": pair}
     
+    def _apply_trade_limits(self, parsed: Optional[Dict[str, Any]], json_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        限制单笔交易的仓位大小，避免过大订单
+        """
+        if not parsed or not isinstance(parsed, dict):
+            return parsed
+        
+        if self.max_trade_usd is None or self.max_trade_usd <= 0:
+            return parsed
+        
+        quantity = parsed.get("quantity")
+        if quantity is None:
+            return parsed
+        
+        try:
+            quantity = float(quantity)
+        except (TypeError, ValueError):
+            return parsed
+        
+        # 估算使用的USD金额
+        price_for_usd = None
+        if parsed.get("price") is not None:
+            try:
+                price_for_usd = float(parsed["price"])
+            except (TypeError, ValueError):
+                price_for_usd = None
+        
+        if price_for_usd is None and json_data:
+            price_ref = json_data.get("price_ref") or json_data.get("price")
+            if price_ref is not None:
+                try:
+                    price_for_usd = float(price_ref)
+                except (TypeError, ValueError):
+                    price_for_usd = None
+        
+        estimated_usd = None
+        if json_data and json_data.get("position_size_usd") is not None:
+            try:
+                estimated_usd = float(json_data["position_size_usd"])
+            except (TypeError, ValueError):
+                estimated_usd = None
+        if estimated_usd is None and price_for_usd is not None:
+            estimated_usd = quantity * price_for_usd
+        
+        if estimated_usd is None:
+            return parsed
+        
+        # 结合可用资金信息（如有）
+        max_allowed = self.max_trade_usd
+        if json_data:
+            capital_info = json_data.get("capital_info")
+            if isinstance(capital_info, dict):
+                available = capital_info.get("available")
+                if available is not None:
+                    try:
+                        available = float(available)
+                        if available > 0:
+                            max_allowed = min(max_allowed, available)
+                    except (TypeError, ValueError):
+                        pass
+        
+        if max_allowed <= 0:
+            return parsed
+        
+        if estimated_usd > max_allowed and price_for_usd and price_for_usd > 0:
+            new_usd = max_allowed
+            new_quantity = new_usd / price_for_usd
+            parsed["quantity"] = new_quantity
+            if json_data is not None:
+                json_data["position_size_usd"] = new_usd
+                json_data["quantity"] = new_quantity
+            print(f"[Executor] 调整下单规模: {estimated_usd:.2f} USD -> {new_usd:.2f} USD (数量 {new_quantity:.6f})")
+        
+        return parsed
+
     def _convert_symbol_to_pair(self, symbol: str) -> str:
         """
         转换symbol格式：BTCUSDT -> BTC/USD, BTC/USDT -> BTC/USD
@@ -636,5 +719,8 @@ class TradeExecutor(threading.Thread):
         if symbol:
             return f"{symbol}/USD"
         return self.default_pair
+
+
+
 
 
