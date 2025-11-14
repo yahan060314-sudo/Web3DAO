@@ -103,21 +103,28 @@ class BaseAgent(threading.Thread):
                 complete_snapshot_received = False
                 
                 # 首先快速检查队列中是否有完整快照（优先级最高）
-                # 先尝试接收一次，看是否有完整快照
-                market_msg = self.market_sub.recv(timeout=0.0)  # 非阻塞检查
-                if market_msg is not None:
-                    msg_type = market_msg.get("type", "unknown")
-                    is_complete = market_msg.get("is_complete", False)
-                    if is_complete or msg_type == "complete_market_snapshot":
-                        print(f"[{self.name}] 🔔 立即检测到完整快照消息（循环开始）！")
-                        self._handle_market_data(market_msg)
-                        complete_snapshot_received = True
-                        received_any = True
-                    else:
-                        # 不是完整快照，暂存
-                        pending_messages = [market_msg]
-                else:
-                    pending_messages = []
+                # 持续监听，直到找到完整快照或确认没有更多消息
+                pending_messages = []
+                # 先尝试快速接收几次，看是否有完整快照
+                # 增加检查次数和超时时间，确保能收到完整快照
+                for quick_check in range(30):  # 快速检查30次，每次0.2秒，总共6秒
+                    market_msg = self.market_sub.recv(timeout=0.2)  # 每次等待0.2秒
+                    if market_msg is not None:
+                        msg_type = market_msg.get("type", "unknown")
+                        is_complete = market_msg.get("is_complete", False)
+                        # 调试：打印接收到的消息（只打印完整快照或前几条）
+                        if is_complete or msg_type == "complete_market_snapshot" or quick_check < 3:
+                            print(f"[{self.name}] 📨 快速检查 #{quick_check+1}: type={msg_type}, is_complete={is_complete}")
+                        if is_complete or msg_type == "complete_market_snapshot":
+                            print(f"[{self.name}] 🔔 立即检测到完整快照消息（快速检查第{quick_check+1}次）！")
+                            self._handle_market_data(market_msg)
+                            complete_snapshot_received = True
+                            received_any = True
+                            break  # 找到完整快照，跳出快速检查
+                        else:
+                            # 不是完整快照，暂存
+                            pending_messages.append(market_msg)
+                    # 即使队列为空，也继续检查（完整快照可能稍后到达）
                 
                 # 如果还没找到完整快照，继续扫描消息
                 if not complete_snapshot_received:
@@ -238,8 +245,24 @@ class BaseAgent(threading.Thread):
                     self._last_decision_ts = now
 
                 # 简单节流，避免忙等
+                # 如果没有收到任何消息，短暂休眠，但不要休眠太久，以免错过完整快照
                 if not received_any:
-                    time.sleep(0.01)
+                    # 在休眠前，再快速检查一次是否有完整快照
+                    quick_check_msg = self.market_sub.recv(timeout=0.05)
+                    if quick_check_msg is not None:
+                        msg_type = quick_check_msg.get("type", "unknown")
+                        is_complete = quick_check_msg.get("is_complete", False)
+                        if is_complete or msg_type == "complete_market_snapshot":
+                            print(f"[{self.name}] 🔔 在休眠前检测到完整快照消息！")
+                            self._handle_market_data(quick_check_msg)
+                            complete_snapshot_received = True
+                            received_any = True
+                        else:
+                            # 不是完整快照，也处理它
+                            self._handle_market_data(quick_check_msg)
+                            received_any = True
+                    else:
+                        time.sleep(0.01)
                 
                 # 每1000次循环打印一次状态（调试用）
                 if loop_count % 1000 == 0:
@@ -582,6 +605,7 @@ Provide your decision in JSON format, selecting the currency with the best oppor
             pass
         
         return False
+
 
 
 
