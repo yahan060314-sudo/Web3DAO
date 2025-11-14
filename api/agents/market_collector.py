@@ -173,15 +173,22 @@ class MarketDataCollector(threading.Thread):
             balance=self._last_balance
         )
         
-        # 标记为完整快照
+        # 标记为完整快照（确保类型和标记都正确设置）
         complete_snapshot["type"] = "complete_market_snapshot"
         complete_snapshot["is_complete"] = True
         complete_snapshot["total_pairs_collected"] = len(self._last_tickers)
         complete_snapshot["total_pairs_available"] = len(self.pairs)
         
+        # 调试：打印快照的关键信息
+        print(f"[MarketDataCollector] 🔔 准备发布完整市场快照:")
+        print(f"  - type: {complete_snapshot.get('type')}")
+        print(f"  - is_complete: {complete_snapshot.get('is_complete')}")
+        print(f"  - tickers数量: {len(self._last_tickers)}")
+        print(f"  - 快照keys: {list(complete_snapshot.keys())[:10]}")
+        
         # 发布完整快照
         self.bus.publish(self.market_topic, complete_snapshot)
-        print(f"[MarketDataCollector] ✓ 发布完整市场快照: {len(self._last_tickers)}/{len(self.pairs)} 个交易对已采集")
+        print(f"[MarketDataCollector] ✓ 已发布完整市场快照到消息总线: {len(self._last_tickers)}/{len(self.pairs)} 个交易对已采集")
         self._last_complete_snapshot_time = time.time()
     
     def get_latest_snapshot(self) -> Dict[str, Any]:
@@ -195,6 +202,8 @@ class MarketDataCollector(threading.Thread):
             tickers=self._last_tickers,  # 返回所有ticker，而不是单个
             balance=self._last_balance
         )
+
+
 
 
 
