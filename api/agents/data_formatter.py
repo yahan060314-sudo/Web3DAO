@@ -288,9 +288,20 @@ class DataFormatter:
             if len(tickers_to_format) == 1:
                 # 单个币种，保持原有格式
                 ticker = tickers_to_format[0]
-                lines.append(f"📊 Market Data ({ticker.get('pair', 'N/A')}):")
-                if "price" in ticker:
-                    lines.append(f"  Current Price: ${ticker['price']:.2f}")
+                pair = ticker.get('pair', 'N/A')
+                lines.append(f"📊 Market Data ({pair}):")
+                
+                # 检查price字段（可能在不同位置）
+                price = ticker.get("price") or ticker.get("Price") or ticker.get("lastPrice")
+                if price is not None:
+                    try:
+                        lines.append(f"  Current Price: ${float(price):.2f}")
+                    except (ValueError, TypeError):
+                        pass
+                else:
+                    # 即使没有price，也显示ticker数据存在
+                    lines.append(f"  Market data available for {pair} (price data processing...)")
+                
                 if "change_24h" in ticker:
                     change = ticker["change_24h"]
                     sign = "+" if change >= 0 else ""
@@ -299,14 +310,25 @@ class DataFormatter:
                     lines.append(f"  24h Volume: {ticker['volume_24h']:.2f}")
                 if "high_24h" in ticker and "low_24h" in ticker:
                     lines.append(f"  24h Range: ${ticker['low_24h']:.2f} - ${ticker['high_24h']:.2f}")
+                
+                # 调试：如果没有price字段，打印ticker的keys
+                if not price:
+                    print(f"[DataFormatter] ⚠️ Ticker {pair} 没有price字段，keys: {list(ticker.keys())[:10]}")
             else:
                 # 多个币种，格式化所有
                 lines.append(f"📊 Market Data (Multiple Currencies - {len(tickers_to_format)} pairs):")
                 for ticker in tickers_to_format:
                     pair = ticker.get('pair', 'N/A')
                     lines.append(f"\n  {pair}:")
-                    if "price" in ticker:
-                        lines.append(f"    Current Price: ${ticker['price']:.2f}")
+                    
+                    # 检查price字段（可能在不同位置）
+                    price = ticker.get("price") or ticker.get("Price") or ticker.get("lastPrice")
+                    if price is not None:
+                        try:
+                            lines.append(f"    Current Price: ${float(price):.2f}")
+                        except (ValueError, TypeError):
+                            pass
+                    
                     if "change_24h" in ticker:
                         change = ticker["change_24h"]
                         sign = "+" if change >= 0 else ""
@@ -341,4 +363,5 @@ class DataFormatter:
                     lines.append(f"  ... and {len(trade_pairs) - 10} more pairs available")
         
         return "\n".join(lines) if lines else "No market data available"
+
 
