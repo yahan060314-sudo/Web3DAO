@@ -357,28 +357,28 @@ def main():
     elif os.getenv("MINIMAX_API_KEY"):
         llm_provider_1 = "minimax"
     
-    # Agent 2: 使用第二个可用的LLM（如果只有一个，则使用同一个）
+    # Agent 2: 优先使用qwen（如果可用），否则使用其他可用的LLM
     llm_provider_2 = None
-    if os.getenv("QWEN_API_KEY") and llm_provider_1 != "qwen":
+    if os.getenv("QWEN_API_KEY"):
         llm_provider_2 = "qwen"
-    elif os.getenv("DEEPSEEK_API_KEY") and llm_provider_1 != "deepseek":
-        llm_provider_2 = "deepseek"
     elif os.getenv("MINIMAX_API_KEY") and llm_provider_1 != "minimax":
         llm_provider_2 = "minimax"
+    elif os.getenv("DEEPSEEK_API_KEY") and llm_provider_1 != "deepseek":
+        llm_provider_2 = "deepseek"
     else:
         llm_provider_2 = llm_provider_1  # 如果只有一个LLM，两个Agent使用同一个
     
-    # 创建系统提示词（使用aggressive策略，确保能做出决策）
+    # 创建系统提示词（使用moderate策略，平衡风险和收益）
     agent_1_prompt = prompt_mgr.get_system_prompt(
         agent_name="Agent1",
-        trading_strategy="Actively seek trading opportunities. Make decisions when you have 60%+ confidence. Be proactive in identifying entry and exit points.",
-        risk_level="aggressive"
+        trading_strategy="Balance risk and reward. Look for good trading opportunities but don't take excessive risks. Make decisions when you have reasonable confidence (70%+).",
+        risk_level="moderate"
     )
     
     agent_2_prompt = prompt_mgr.get_system_prompt(
         agent_name="Agent2",
-        trading_strategy="Actively analyze market conditions and make trading decisions when opportunities arise. Take calculated risks for better returns. 60%+ confidence is sufficient.",
-        risk_level="aggressive"
+        trading_strategy="Balance risk and reward. Analyze market conditions carefully and make trading decisions when opportunities arise. 70%+ confidence is sufficient for taking action.",
+        risk_level="moderate"
     )
     
     # 9. 添加Agent
