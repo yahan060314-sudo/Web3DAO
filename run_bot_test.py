@@ -543,7 +543,7 @@ If you conclude no trade should be made right now, respond with:
     logger.info("=" * 80)
     logger.info("系统配置:")
     logger.info(f"  - 两个Agent平分本金: {agent_1_capital:.2f} USD / {agent_2_capital:.2f} USD")
-    logger.info(f"  - 全局决策频率限制: 每分钟最多1次")
+    logger.info(f"  - 全局决策频率限制: 每分钟最多2次（允许两个Agent都能做决策）")
     logger.info(f"  - API调用频率限制: 每分钟最多5次")
     logger.info(f"  - 交易模式: {'测试模式 (DRY_RUN)' if dry_run else '真实交易模式'}")
     logger.info(f"  - API环境: 虚拟API (mock-api.roostoo.com)")
