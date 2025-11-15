@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional, List
 from api.roostoo_client import RoostooClient
 from .bus import MessageBus
 from .data_formatter import DataFormatter
+from .history_storage import HistoryStorage
 
 
 class MarketDataCollector(threading.Thread):
@@ -56,6 +57,9 @@ class MarketDataCollector(threading.Thread):
         self.client = RoostooClient()
         self.formatter = DataFormatter()
         self._stopped = False
+        
+        # 历史数据存储（用于计算技术指标）
+        self.history_storage = HistoryStorage(max_history_size=1000)
         
         # 缓存上次采集的数据，用于对比变化
         self._last_tickers: Dict[str, Dict[str, Any]] = {}
@@ -130,6 +134,8 @@ class MarketDataCollector(threading.Thread):
                 
                 if price_changed:
                     self._last_tickers[pair] = formatted_ticker
+                    # 存储到历史数据（用于计算技术指标）
+                    self.history_storage.add_ticker(pair, formatted_ticker)
                     # 发布单个ticker数据
                     self.bus.publish(self.market_topic, formatted_ticker)
                     print(f"[MarketDataCollector] Published ticker for {pair}: ${formatted_ticker.get('price', 'N/A')}")
@@ -178,10 +184,11 @@ class MarketDataCollector(threading.Thread):
         if not self._last_tickers:
             return  # 没有ticker数据，不发布
         
-        # 创建完整的市场快照（包含所有ticker）
+        # 创建完整的市场快照（包含所有ticker和技术指标）
         complete_snapshot = self.formatter.create_market_snapshot(
             tickers=self._last_tickers,  # 使用所有已采集的ticker
-            balance=self._last_balance
+            balance=self._last_balance,
+            history_storage=self.history_storage  # 传入历史数据存储，用于计算技术指标
         )
         
         # 标记为完整快照（确保类型和标记都正确设置）
