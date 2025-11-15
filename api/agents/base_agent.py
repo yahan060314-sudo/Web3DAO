@@ -455,14 +455,20 @@ Provide your decision in JSON format, selecting the currency with the best oppor
         # 记录决策生成（全局限制）
         GLOBAL_DECISION_RATE_LIMITER.record_call()
         
+        print(f"[{self.name}] 📋 开始构建LLM消息...")
+        
         # 构建 LLM 输入：系统提示 + 对话历史 + 市场数据
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": self.system_prompt}
         ]
         
+        print(f"[{self.name}] ✓ 已添加系统提示词 (长度: {len(self.system_prompt)} 字符)")
+        
         # 添加市场数据上下文
         if self.last_market_snapshot is not None:
+            print(f"[{self.name}] 📊 开始格式化市场数据...")
             market_text = self.formatter.format_for_llm(self.last_market_snapshot)
+            print(f"[{self.name}] ✓ 市场数据格式化完成 (长度: {len(market_text) if market_text else 0} 字符)")
             
             # 调试：检查格式化后的市场数据
             if not market_text or market_text == "No market data available":
@@ -531,16 +537,25 @@ Provide your decision in JSON format, selecting the currency with the best oppor
             if position_info:
                 combined_info += "\n\n" + position_info
             
+            print(f"[{self.name}] ✓ 已组合市场数据、资金和持仓信息 (总长度: {len(combined_info)} 字符)")
+            
             messages.append({
                 "role": "system",
                 "content": f"Current Market Data:\n{combined_info}"
             })
+            print(f"[{self.name}] ✓ 已添加市场数据到消息列表")
+        else:
+            print(f"[{self.name}] ⚠️ 没有市场快照数据，跳过市场数据添加")
         
         # 添加最近的对话历史（控制上下文长度）
+        print(f"[{self.name}] 📝 添加对话历史 (历史记录数: {len(self.dialog_history)}, 将添加最近5条)")
         messages.extend(self.dialog_history[-5:])
+        print(f"[{self.name}] ✓ 对话历史已添加，当前消息数: {len(messages)}")
         
         # 添加当前用户提示
+        print(f"[{self.name}] 📝 添加用户提示 (长度: {len(user_prompt)} 字符)")
         messages.append({"role": "user", "content": user_prompt})
+        print(f"[{self.name}] ✓ 用户提示已添加，最终消息数: {len(messages)}")
 
         # 请求 LLM 得到决策（提高temperature到0.7，让模型更愿意做出决策）
         try:
@@ -632,6 +647,7 @@ Provide your decision in JSON format, selecting the currency with the best oppor
             pass
         
         return False
+
 
 
 
