@@ -268,4 +268,54 @@ class TechnicalIndicators:
             indicators['bb_lower'] = bb['lower'][-1] if bb['lower'] else None
         
         return indicators
+    
+    @staticmethod
+    def calculate_partial_indicators(prices: List[float]) -> Dict[str, Any]:
+        """
+        计算部分技术指标（当历史数据不足14个点时使用）
+        即使数据不足，也尽可能计算可用的指标
+        
+        Args:
+            prices: 价格序列（至少2个点）
+        
+        Returns:
+            包含可用技术指标的字典
+        """
+        indicators = {}
+        data_count = len(prices)
+        
+        if data_count < 2:
+            return indicators
+        
+        # 计算价格趋势（简单趋势判断）
+        if data_count >= 2:
+            price_change = prices[-1] - prices[0]
+            price_change_pct = (price_change / prices[0]) * 100 if prices[0] != 0 else 0
+            indicators['price_trend'] = 'up' if price_change > 0 else 'down' if price_change < 0 else 'flat'
+            indicators['price_change_pct'] = price_change_pct
+        
+        # 计算简单移动平均（如果数据足够）
+        if data_count >= 3:
+            sma_3 = sum(prices[-3:]) / 3
+            indicators['sma_3'] = sma_3
+        if data_count >= 5:
+            sma_5 = sum(prices[-5:]) / 5
+            indicators['sma_5'] = sma_5
+        
+        # 计算短周期EMA（如果数据足够）
+        for period in [3, 5, 9]:
+            if data_count >= period:
+                ema = TechnicalIndicators.calculate_ema(prices, period)
+                if ema:
+                    indicators[f'ema_{period}'] = ema[-1]
+        
+        # 如果数据足够，尝试计算更多指标
+        if data_count >= 12:
+            ema_12 = TechnicalIndicators.calculate_ema(prices, 12)
+            if ema_12:
+                indicators['ema_12'] = ema_12[-1]
+        
+        return indicators
+
+
 
