@@ -10,6 +10,7 @@
 
 from typing import Dict, Any, Optional, List
 import time
+from .technical_indicators import TechnicalIndicators
 
 
 class DataFormatter:
@@ -224,7 +225,8 @@ class DataFormatter:
         ticker: Optional[Dict[str, Any]] = None,
         tickers: Optional[Dict[str, Dict[str, Any]]] = None,
         balance: Optional[Dict[str, Any]] = None,
-        exchange_info: Optional[Dict[str, Any]] = None
+        exchange_info: Optional[Dict[str, Any]] = None,
+        history_storage=None
     ) -> Dict[str, Any]:
         """
         创建综合市场快照，包含当前市场状态和账户状态
@@ -240,22 +242,49 @@ class DataFormatter:
         """
         # 如果提供了tickers字典，使用它；否则使用单个ticker（向后兼容）
         if tickers is not None and isinstance(tickers, dict) and len(tickers) > 0:
-            # 多个ticker数据
+            # 多个ticker数据 - 为每个ticker添加技术指标
+            tickers_with_indicators = {}
+            for pair, ticker_data in tickers.items():
+                ticker_with_indicators = ticker_data.copy()
+                # 如果有历史数据存储，计算技术指标
+                if history_storage:
+                    try:
+                        price_series = history_storage.get_price_series(pair, limit=500)
+                        if len(price_series) >= 14:  # 至少需要14个数据点来计算RSI等指标
+                            indicators = TechnicalIndicators.calculate_all_indicators(price_series)
+                            ticker_with_indicators['indicators'] = indicators
+                    except Exception as e:
+                        # 计算指标失败不影响主流程
+                        pass
+                tickers_with_indicators[pair] = ticker_with_indicators
+            
             snapshot = {
                 "type": "market_snapshot",
                 "timestamp": time.time(),
-                "tickers": tickers,  # 多个ticker数据
-                "ticker": list(tickers.values())[0] if tickers else None,  # 向后兼容：保留第一个ticker
+                "tickers": tickers_with_indicators,  # 包含技术指标的多个ticker数据
+                "ticker": list(tickers_with_indicators.values())[0] if tickers_with_indicators else None,  # 向后兼容
                 "balance": balance,
                 "exchange_info": exchange_info
             }
         else:
             # 单个ticker数据（向后兼容）
+            ticker_with_indicators = ticker.copy() if ticker else None
+            if ticker_with_indicators and history_storage:
+                pair = ticker_with_indicators.get("pair")
+                if pair:
+                    try:
+                        price_series = history_storage.get_price_series(pair, limit=500)
+                        if len(price_series) >= 14:
+                            indicators = TechnicalIndicators.calculate_all_indicators(price_series)
+                            ticker_with_indicators['indicators'] = indicators
+                    except Exception:
+                        pass
+            
             snapshot = {
                 "type": "market_snapshot",
                 "timestamp": time.time(),
-                "ticker": ticker,
-                "tickers": {ticker.get("pair"): ticker} if ticker and ticker.get("pair") else None,  # 转换为字典格式
+                "ticker": ticker_with_indicators,
+                "tickers": {ticker_with_indicators.get("pair"): ticker_with_indicators} if ticker_with_indicators and ticker_with_indicators.get("pair") else None,
                 "balance": balance,
                 "exchange_info": exchange_info
             }
@@ -315,6 +344,27 @@ class DataFormatter:
                 if "high_24h" in ticker and "low_24h" in ticker:
                     lines.append(f"  24h Range: ${ticker['low_24h']:.2f} - ${ticker['high_24h']:.2f}")
                 
+                # 添加技术指标信息
+                if "indicators" in ticker and ticker["indicators"]:
+                    indicators = ticker["indicators"]
+                    lines.append(f"  📈 Technical Indicators:")
+                    if indicators.get("rsi") is not None:
+                        lines.append(f"    RSI(14): {indicators['rsi']:.2f}")
+                    if indicators.get("ema_9") is not None:
+                        lines.append(f"    EMA(9): ${indicators['ema_9']:.2f}")
+                    if indicators.get("ema_26") is not None:
+                        lines.append(f"    EMA(26): ${indicators['ema_26']:.2f}")
+                    if indicators.get("ema_50") is not None:
+                        lines.append(f"    EMA(50): ${indicators['ema_50']:.2f}")
+                    if indicators.get("macd") is not None:
+                        lines.append(f"    MACD: {indicators['macd']:.4f}")
+                        if indicators.get("macd_signal") is not None:
+                            lines.append(f"    MACD Signal: {indicators['macd_signal']:.4f}")
+                        if indicators.get("macd_histogram") is not None:
+                            lines.append(f"    MACD Histogram: {indicators['macd_histogram']:.4f}")
+                    if indicators.get("bb_upper") is not None and indicators.get("bb_lower") is not None:
+                        lines.append(f"    Bollinger Bands: ${indicators['bb_lower']:.2f} - ${indicators['bb_upper']:.2f}")
+                
                 # 调试：如果没有price字段，打印ticker的keys
                 if not price:
                     print(f"[DataFormatter] ⚠️ Ticker {pair} 没有price字段，keys: {list(ticker.keys())[:10]}")
@@ -345,6 +395,25 @@ class DataFormatter:
                         lines.append(f"    24h Volume: {ticker['volume_24h']:.2f}")
                     if "high_24h" in ticker and "low_24h" in ticker:
                         lines.append(f"    24h Range: ${ticker['low_24h']:.2f} - ${ticker['high_24h']:.2f}")
+                    
+                    # 添加技术指标信息
+                    if "indicators" in ticker and ticker["indicators"]:
+                        indicators = ticker["indicators"]
+                        lines.append(f"    📈 Technical Indicators:")
+                        if indicators.get("rsi") is not None:
+                            lines.append(f"      RSI(14): {indicators['rsi']:.2f}")
+                        if indicators.get("ema_9") is not None:
+                            lines.append(f"      EMA(9): ${indicators['ema_9']:.2f}")
+                        if indicators.get("ema_26") is not None:
+                            lines.append(f"      EMA(26): ${indicators['ema_26']:.2f}")
+                        if indicators.get("ema_50") is not None:
+                            lines.append(f"      EMA(50): ${indicators['ema_50']:.2f}")
+                        if indicators.get("macd") is not None:
+                            lines.append(f"      MACD: {indicators['macd']:.4f}")
+                            if indicators.get("macd_signal") is not None:
+                                lines.append(f"      MACD Signal: {indicators['macd_signal']:.4f}")
+                        if indicators.get("bb_upper") is not None and indicators.get("bb_lower") is not None:
+                            lines.append(f"      Bollinger Bands: ${indicators['bb_lower']:.2f} - ${indicators['bb_upper']:.2f}")
         
         if snapshot.get("balance"):
             balance = snapshot["balance"]
@@ -371,6 +440,7 @@ class DataFormatter:
                     lines.append(f"  ... and {len(trade_pairs) - 10} more pairs available")
         
         return "\n".join(lines) if lines else "No market data available"
+
 
 
 
