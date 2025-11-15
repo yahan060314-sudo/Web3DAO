@@ -396,10 +396,17 @@ Based on this information, what trading action do you recommend? Provide your de
         在收到完整快照后调用，让Agent分析所有交易对
         """
         if self.last_market_snapshot is None:
+            print(f"[{self.name}] ⚠️ _trigger_decision_from_complete_snapshot: last_market_snapshot is None")
             return
+        
+        print(f"[{self.name}] 🎯 开始生成决策（基于完整快照）...")
         
         # 构建决策提示词，强调分析所有交易对
         market_text = self.formatter.format_for_llm(self.last_market_snapshot)
+        
+        if not market_text or market_text == "No market data available":
+            print(f"[{self.name}] ⚠️ _trigger_decision_from_complete_snapshot: 市场数据格式化后为空")
+            return
         
         user_prompt = f"""Complete market snapshot with all trading pairs has been collected. Analyze ALL available trading pairs and make a trading decision.
 
@@ -414,6 +421,7 @@ IMPORTANT: You have access to data from ALL trading pairs. Compare opportunities
 
 Provide your decision in JSON format, selecting the currency with the best opportunity."""
         
+        print(f"[{self.name}] 📝 调用 _generate_decision...")
         # 生成决策（会检查全局频率限制）
         self._generate_decision(user_prompt)
     
@@ -435,12 +443,14 @@ Provide your decision in JSON format, selecting the currency with the best oppor
         Args:
             user_prompt: 用户提示词
         """
-        # 全局决策频率限制：整个bot每分钟最多1次
+        # 全局决策频率限制：整个bot每分钟最多2次（允许两个Agent都能做决策）
         if not GLOBAL_DECISION_RATE_LIMITER.can_call():
             wait_time = GLOBAL_DECISION_RATE_LIMITER.wait_time()
             if wait_time > 0:
                 print(f"[{self.name}] ⚠️ 全局决策频率限制: 需要等待 {wait_time:.1f} 秒")
                 return  # 跳过本次决策生成
+        
+        print(f"[{self.name}] ✓ 通过频率限制检查，开始调用LLM生成决策...")
         
         # 记录决策生成（全局限制）
         GLOBAL_DECISION_RATE_LIMITER.record_call()
@@ -569,7 +579,9 @@ Provide your decision in JSON format, selecting the currency with the best oppor
             elif self.allocated_capital:
                 print(f"[{self.name}] 分配资金: {self.allocated_capital:.2f} USD (初始分配，实际余额需从API获取)")
         except Exception as e:
-            print(f"[{self.name}] Error generating decision: {e}")
+            print(f"[{self.name}] ❌ Error generating decision: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _validate_json_decision(self, text: str) -> bool:
         """
@@ -605,6 +617,9 @@ Provide your decision in JSON format, selecting the currency with the best oppor
             pass
         
         return False
+
+
+
 
 
 
