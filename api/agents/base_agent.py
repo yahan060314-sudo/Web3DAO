@@ -478,6 +478,7 @@ Provide your decision in JSON format, selecting the currency with the best oppor
                 print(f"[{self.name}] ⚠️ 快照内容: {list(self.last_market_snapshot.keys())}")
             
             # 构建资金和持仓信息
+            print(f"[{self.name}] 💰 开始构建资金信息...")
             info_parts = []
             
             # 1. 资金信息
@@ -486,10 +487,17 @@ Provide your decision in JSON format, selecting the currency with the best oppor
             available = None
             used = None
             if self.capital_manager:
+                print(f"[{self.name}] 💰 从CapitalManager获取资金信息...")
                 allocated = self.capital_manager.get_allocated_capital(self.name)
+                print(f"[{self.name}] ✓ 已获取allocated: {allocated}")
                 available = self.capital_manager.get_available_capital(self.name)
+                print(f"[{self.name}] ✓ 已获取available: {available}")
                 used = self.capital_manager.get_used_capital(self.name)
+                print(f"[{self.name}] ✓ 已获取used: {used}")
+            else:
+                print(f"[{self.name}] ⚠️ 没有CapitalManager，使用初始分配资金: {allocated}")
             if allocated is not None:
+                print(f"[{self.name}] 💰 开始构建资金信息文本...")
                 capital_lines = [
                     "",
                     "",
@@ -503,32 +511,46 @@ Provide your decision in JSON format, selecting the currency with the best oppor
                 capital_lines.append("   The account balance shown above is shared with other agents.")
                 capital_lines.append("   Base your position sizes on YOUR available capital, not the total account balance.")
                 capital_info = "\n".join(capital_lines)
+                print(f"[{self.name}] ✓ 资金信息文本构建完成 (长度: {len(capital_info)} 字符)")
+            else:
+                print(f"[{self.name}] ⚠️ allocated为None，跳过资金信息构建")
             
             # 2. 持仓信息（如果启用了持仓跟踪）
+            print(f"[{self.name}] 📊 开始构建持仓信息...")
             position_info = ""
             if self.position_tracker:
+                print(f"[{self.name}] 📊 从PositionTracker获取持仓信息...")
                 # 从市场快照中提取当前价格，用于计算持仓价值
+                print(f"[{self.name}] 📊 提取当前价格...")
                 current_prices = {}
                 if self.last_market_snapshot.get("tickers"):
                     tickers = self.last_market_snapshot["tickers"]
                     if isinstance(tickers, dict):
+                        print(f"[{self.name}] 📊 tickers是dict类型，包含{len(tickers)}个交易对")
                         for pair, ticker_data in tickers.items():
                             if isinstance(ticker_data, dict) and "price" in ticker_data:
                                 # 提取币种：BTC/USD -> BTC
                                 base_currency = pair.split("/")[0] if "/" in pair else pair.replace("USD", "").replace("USDT", "")
                                 current_prices[base_currency] = float(ticker_data["price"])
                     elif isinstance(tickers, list) and len(tickers) > 0:
+                        print(f"[{self.name}] 📊 tickers是list类型，包含{len(tickers)}个元素")
                         ticker = tickers[0]
                         if isinstance(ticker, dict) and "price" in ticker:
                             pair = ticker.get("pair", "")
                             base_currency = pair.split("/")[0] if "/" in pair else pair.replace("USD", "").replace("USDT", "")
                             current_prices[base_currency] = float(ticker["price"])
                 
+                print(f"[{self.name}] ✓ 已提取{len(current_prices)}个当前价格")
+                print(f"[{self.name}] 📊 调用format_positions_for_llm...")
+                
                 # 格式化持仓信息
                 position_info = self.position_tracker.format_positions_for_llm(
                     agent_name=self.name,
                     current_prices=current_prices if current_prices else None
                 )
+                print(f"[{self.name}] ✓ 持仓信息格式化完成 (长度: {len(position_info) if position_info else 0} 字符)")
+            else:
+                print(f"[{self.name}] ⚠️ 没有PositionTracker，跳过持仓信息构建")
             
             # 组合所有信息
             combined_info = market_text
