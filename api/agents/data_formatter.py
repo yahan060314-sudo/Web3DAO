@@ -250,12 +250,22 @@ class DataFormatter:
                 if history_storage:
                     try:
                         price_series = history_storage.get_price_series(pair, limit=500)
-                        if len(price_series) >= 14:  # 至少需要14个数据点来计算RSI等指标
+                        data_count = len(price_series)
+                        if data_count >= 14:  # 至少需要14个数据点来计算RSI等指标
                             indicators = TechnicalIndicators.calculate_all_indicators(price_series)
                             ticker_with_indicators['indicators'] = indicators
+                            # 调试：确认指标已计算
+                            if indicators.get('rsi') is not None:
+                                print(f"[DataFormatter] ✓ {pair}: 技术指标已计算 (历史数据: {data_count}点, RSI={indicators['rsi']:.2f})")
+                        else:
+                            # 数据不足，不计算指标
+                            if data_count > 0:
+                                print(f"[DataFormatter] ⚠️ {pair}: 历史数据不足 ({data_count}/14点)，无法计算技术指标")
                     except Exception as e:
-                        # 计算指标失败不影响主流程
-                        pass
+                        # 计算指标失败不影响主流程，但打印错误以便调试
+                        print(f"[DataFormatter] ⚠️ {pair}: 计算技术指标失败: {e}")
+                        import traceback
+                        traceback.print_exc()
                 tickers_with_indicators[pair] = ticker_with_indicators
             
             snapshot = {
@@ -274,11 +284,17 @@ class DataFormatter:
                 if pair:
                     try:
                         price_series = history_storage.get_price_series(pair, limit=500)
-                        if len(price_series) >= 14:
+                        data_count = len(price_series)
+                        if data_count >= 14:
                             indicators = TechnicalIndicators.calculate_all_indicators(price_series)
                             ticker_with_indicators['indicators'] = indicators
-                    except Exception:
-                        pass
+                            if indicators.get('rsi') is not None:
+                                print(f"[DataFormatter] ✓ {pair}: 技术指标已计算 (历史数据: {data_count}点)")
+                        else:
+                            if data_count > 0:
+                                print(f"[DataFormatter] ⚠️ {pair}: 历史数据不足 ({data_count}/14点)，无法计算技术指标")
+                    except Exception as e:
+                        print(f"[DataFormatter] ⚠️ {pair}: 计算技术指标失败: {e}")
             
             snapshot = {
                 "type": "market_snapshot",
@@ -364,6 +380,9 @@ class DataFormatter:
                             lines.append(f"    MACD Histogram: {indicators['macd_histogram']:.4f}")
                     if indicators.get("bb_upper") is not None and indicators.get("bb_lower") is not None:
                         lines.append(f"    Bollinger Bands: ${indicators['bb_lower']:.2f} - ${indicators['bb_upper']:.2f}")
+                else:
+                    # 如果没有技术指标，说明数据不足或计算失败
+                    lines.append(f"  📈 Technical Indicators: Not available (insufficient historical data - need at least 14 data points)")
                 
                 # 调试：如果没有price字段，打印ticker的keys
                 if not price:
@@ -414,6 +433,9 @@ class DataFormatter:
                                 lines.append(f"      MACD Signal: {indicators['macd_signal']:.4f}")
                         if indicators.get("bb_upper") is not None and indicators.get("bb_lower") is not None:
                             lines.append(f"      Bollinger Bands: ${indicators['bb_lower']:.2f} - ${indicators['bb_upper']:.2f}")
+                    else:
+                        # 如果没有技术指标，说明数据不足或计算失败
+                        lines.append(f"    📈 Technical Indicators: Not available (insufficient historical data)")
         
         if snapshot.get("balance"):
             balance = snapshot["balance"]
@@ -440,6 +462,7 @@ class DataFormatter:
                     lines.append(f"  ... and {len(trade_pairs) - 10} more pairs available")
         
         return "\n".join(lines) if lines else "No market data available"
+
 
 
 
