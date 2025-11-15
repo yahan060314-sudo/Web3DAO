@@ -40,21 +40,30 @@ class PositionTracker:
         # 每条记录：{"timestamp": ..., "type": "BUY"/"SELL", "pair": "BTC/USD", "quantity": 0.005, "price": 100000, "usd_amount": 500}
         self.trade_history: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     
-    def initialize_agent(self, agent_name: str, initial_capital_usd: float):
+    def initialize_agent(self, agent_name: str, initial_capital_usd: float, initial_positions: Optional[Dict[str, float]] = None):
         """
         初始化Agent的账户
         
         Args:
             agent_name: Agent名称
             initial_capital_usd: 初始资金（USD）
+            initial_positions: 初始加密货币持仓（可选），例如 {"BTC": 0.0149}
         """
         with self.lock:
             self.initial_capital[agent_name] = initial_capital_usd
             self.usd_balances[agent_name] = initial_capital_usd
-            # 初始化持仓为空
+            # 初始化持仓
             if agent_name not in self.positions:
                 self.positions[agent_name] = defaultdict(float)
-            print(f"[PositionTracker] 初始化 {agent_name}: 初始资金 ${initial_capital_usd:.2f} USD")
+            # 如果有初始加密货币持仓，设置它们
+            if initial_positions:
+                for currency, quantity in initial_positions.items():
+                    if quantity > 0:
+                        self.positions[agent_name][currency.upper()] = quantity
+                positions_str = ", ".join([f"{k}: {v:.8f}" for k, v in initial_positions.items() if v > 0])
+                print(f"[PositionTracker] 初始化 {agent_name}: 初始资金 ${initial_capital_usd:.2f} USD, 初始持仓: {positions_str}")
+            else:
+                print(f"[PositionTracker] 初始化 {agent_name}: 初始资金 ${initial_capital_usd:.2f} USD")
     
     def record_trade(self, 
                     agent_name: str, 
@@ -333,5 +342,9 @@ class PositionTracker:
                 print(f"  交易次数: {summary['trade_count']}")
             
             print("=" * 80)
+
+
+
+
 
 
