@@ -126,7 +126,12 @@ class MarketDataCollector(threading.Thread):
                 raw_ticker = self.client.get_ticker(pair=pair)
                 formatted_ticker = self.formatter.format_ticker(raw_ticker, pair=pair)
                 
-                # 检查是否有价格变化（可选：只在价格变化时发布）
+                # 重要：每次采集都存储历史数据（无论价格是否变化）
+                # 这样才能积累足够的数据点来计算技术指标
+                if "price" in formatted_ticker:
+                    self.history_storage.add_ticker(pair, formatted_ticker)
+                
+                # 检查是否有价格变化（只在价格变化时发布到消息总线，减少消息量）
                 last_ticker = self._last_tickers.get(pair)
                 price_changed = True
                 if last_ticker and "price" in last_ticker and "price" in formatted_ticker:
@@ -134,9 +139,7 @@ class MarketDataCollector(threading.Thread):
                 
                 if price_changed:
                     self._last_tickers[pair] = formatted_ticker
-                    # 存储到历史数据（用于计算技术指标）
-                    self.history_storage.add_ticker(pair, formatted_ticker)
-                    # 发布单个ticker数据
+                    # 发布单个ticker数据（只在价格变化时发布，减少消息量）
                     self.bus.publish(self.market_topic, formatted_ticker)
                     print(f"[MarketDataCollector] Published ticker for {pair}: ${formatted_ticker.get('price', 'N/A')}")
                 
@@ -272,6 +275,7 @@ class MarketDataCollector(threading.Thread):
             tickers=self._last_tickers,  # 返回所有ticker，而不是单个
             balance=self._last_balance
         )
+
 
 
 
