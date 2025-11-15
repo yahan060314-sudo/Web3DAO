@@ -38,6 +38,7 @@ from api.agents.market_collector import MarketDataCollector
 from api.agents.prompt_manager import PromptManager
 from api.agents.capital_manager import CapitalManager
 from api.agents.position_tracker import PositionTracker
+from api.agents.data_formatter import DataFormatter
 from api.roostoo_client import RoostooClient
 from api.llm_clients.factory import get_llm_client
 
@@ -288,26 +289,53 @@ def test_api_connection() -> bool:
         return False
 
 
-def get_initial_capital_from_api() -> float:
-    """从API获取初始本金"""
+def get_initial_capital_from_api() -> tuple:
+    """
+    从API获取初始本金和加密货币持仓
+    
+    Returns:
+        (initial_capital_usd, initial_positions)
+        initial_capital_usd: 初始USD余额
+        initial_positions: 初始加密货币持仓，例如 {"BTC": 0.0298}
+    """
+    initial_positions = {}
     try:
         client = RoostooClient()
+        
+        # 1. 获取USD余额（从exchangeInfo或balance）
+        initial_capital = 50000.0
         exchange_info = client.get_exchange_info()
         
         if isinstance(exchange_info, dict) and "InitialWallet" in exchange_info:
             initial_wallet = exchange_info["InitialWallet"]
             if isinstance(initial_wallet, dict) and "USD" in initial_wallet:
                 initial_capital = float(initial_wallet["USD"])
-                logger.info(f"✓ 从API获取初始本金: {initial_capital:.2f} USD")
-                return initial_capital
+                logger.info(f"✓ 从API获取初始USD余额: {initial_capital:.2f} USD")
         
-        logger.warning("⚠️ API响应格式不符合预期，使用默认值50000")
-        return 50000.0
+        # 2. 获取加密货币持仓（从balance API）
+        try:
+            raw_balance = client.get_balance()
+            formatted_balance = DataFormatter.format_balance(raw_balance)
+            
+            if "currencies" in formatted_balance:
+                currencies = formatted_balance["currencies"]
+                for currency, wallet_info in currencies.items():
+                    if currency.upper() != "USD" and wallet_info.get("total", 0) > 0:
+                        quantity = wallet_info.get("total", 0)
+                        initial_positions[currency.upper()] = quantity
+                        logger.info(f"✓ 从API获取初始{currency}持仓: {quantity:.8f}")
+        except Exception as e:
+            logger.warning(f"⚠️ 从API获取余额失败: {e}")
+        
+        if not initial_positions:
+            logger.info("  未检测到初始加密货币持仓")
+        
+        return initial_capital, initial_positions
         
     except Exception as e:
         logger.warning(f"⚠️ 从API获取初始本金失败: {e}")
         logger.info("使用默认值: 50000.0 USD")
-        return 50000.0
+        return 50000.0, {}
 
 
 def main():
@@ -337,12 +365,12 @@ def main():
         logger.error("API连接测试失败，请检查网络和API配置")
         sys.exit(1)
     
-    # 3. 获取初始本金并创建资本管理器
+    # 3. 获取初始本金和持仓并创建资本管理器
     logger.info("=" * 80)
     logger.info("初始化系统")
     logger.info("=" * 80)
     
-    initial_capital = get_initial_capital_from_api()
+    initial_capital, initial_positions = get_initial_capital_from_api()
     capital_manager = CapitalManager(initial_capital=initial_capital)
     
     # 4. 创建持仓跟踪器
@@ -357,8 +385,8 @@ def main():
     logger.info("[3] 创建Prompt管理器...")
     prompt_mgr = PromptManager()
     
-    # 7. 均分本金给两个Agent
-    logger.info("\n[4] 均分本金给两个Agent...")
+    # 7. 均分本金和持仓给两个Agent
+    logger.info("\n[4] 均分本金和持仓给两个Agent...")
     agent_names = ["agent_1", "agent_2"]
     allocations = capital_manager.allocate_equal(agent_names)
     capital_manager.print_summary()
@@ -366,9 +394,18 @@ def main():
     agent_1_capital = allocations.get("agent_1", initial_capital / 2)
     agent_2_capital = allocations.get("agent_2", initial_capital / 2)
     
+    # 均分加密货币持仓
+    agent_1_positions = {}
+    agent_2_positions = {}
+    for currency, total_quantity in initial_positions.items():
+        half_quantity = total_quantity / 2
+        agent_1_positions[currency] = half_quantity
+        agent_2_positions[currency] = half_quantity
+        logger.info(f"  {currency}: {total_quantity:.8f} → Agent1: {half_quantity:.8f}, Agent2: {half_quantity:.8f}")
+    
     # 初始化Agent的持仓跟踪
-    position_tracker.initialize_agent("agent_1", agent_1_capital)
-    position_tracker.initialize_agent("agent_2", agent_2_capital)
+    position_tracker.initialize_agent("agent_1", agent_1_capital, agent_1_positions if agent_1_positions else None)
+    position_tracker.initialize_agent("agent_2", agent_2_capital, agent_2_positions if agent_2_positions else None)
     
     # 8. 创建两个Agent的系统提示词
     logger.info("\n[5] 创建AI Agents...")
@@ -638,6 +675,7 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
 
 
 
