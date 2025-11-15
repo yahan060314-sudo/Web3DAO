@@ -256,11 +256,20 @@ class DataFormatter:
                             ticker_with_indicators['indicators'] = indicators
                             # 调试：确认指标已计算
                             if indicators.get('rsi') is not None:
-                                print(f"[DataFormatter] ✓ {pair}: 技术指标已计算 (历史数据: {data_count}点, RSI={indicators['rsi']:.2f})")
+                                print(f"[DataFormatter] ✓ {pair}: 完整技术指标已计算 (历史数据: {data_count}点, RSI={indicators['rsi']:.2f})")
+                        elif data_count >= 2:  # 数据不足但至少有2个点，计算部分指标
+                            indicators = TechnicalIndicators.calculate_partial_indicators(price_series)
+                            ticker_with_indicators['indicators'] = indicators
+                            # 显示可用的指标
+                            available_indicators = [k for k, v in indicators.items() if v is not None]
+                            if available_indicators:
+                                print(f"[DataFormatter] ⚠️ {pair}: 部分技术指标已计算 (历史数据: {data_count}点, 可用指标: {', '.join(available_indicators[:5])})")
+                            else:
+                                print(f"[DataFormatter] ⚠️ {pair}: 历史数据不足 ({data_count}点)，无法计算技术指标")
                         else:
-                            # 数据不足，不计算指标
+                            # 数据太少（少于2个点），不计算指标
                             if data_count > 0:
-                                print(f"[DataFormatter] ⚠️ {pair}: 历史数据不足 ({data_count}/14点)，无法计算技术指标")
+                                print(f"[DataFormatter] ⚠️ {pair}: 历史数据太少 ({data_count}点)，无法计算技术指标")
                     except Exception as e:
                         # 计算指标失败不影响主流程，但打印错误以便调试
                         print(f"[DataFormatter] ⚠️ {pair}: 计算技术指标失败: {e}")
@@ -363,23 +372,46 @@ class DataFormatter:
                 # 添加技术指标信息
                 if "indicators" in ticker and ticker["indicators"]:
                     indicators = ticker["indicators"]
-                    lines.append(f"  📈 Technical Indicators:")
-                    if indicators.get("rsi") is not None:
-                        lines.append(f"    RSI(14): {indicators['rsi']:.2f}")
-                    if indicators.get("ema_9") is not None:
-                        lines.append(f"    EMA(9): ${indicators['ema_9']:.2f}")
-                    if indicators.get("ema_26") is not None:
-                        lines.append(f"    EMA(26): ${indicators['ema_26']:.2f}")
-                    if indicators.get("ema_50") is not None:
-                        lines.append(f"    EMA(50): ${indicators['ema_50']:.2f}")
-                    if indicators.get("macd") is not None:
-                        lines.append(f"    MACD: {indicators['macd']:.4f}")
-                        if indicators.get("macd_signal") is not None:
-                            lines.append(f"    MACD Signal: {indicators['macd_signal']:.4f}")
-                        if indicators.get("macd_histogram") is not None:
-                            lines.append(f"    MACD Histogram: {indicators['macd_histogram']:.4f}")
-                    if indicators.get("bb_upper") is not None and indicators.get("bb_lower") is not None:
-                        lines.append(f"    Bollinger Bands: ${indicators['bb_lower']:.2f} - ${indicators['bb_upper']:.2f}")
+                    # 检查是否有任何非None的指标值
+                    has_any_indicator = any(v is not None for v in indicators.values())
+                    if has_any_indicator:
+                        lines.append(f"  📈 Technical Indicators:")
+                        # 价格趋势（部分指标）
+                        if indicators.get("price_trend") is not None:
+                            trend = indicators['price_trend']
+                            change_pct = indicators.get('price_change_pct', 0)
+                            lines.append(f"    Price Trend: {trend.upper()} ({change_pct:+.2f}%)")
+                        # 短周期指标（部分指标）
+                        if indicators.get("sma_3") is not None:
+                            lines.append(f"    SMA(3): ${indicators['sma_3']:.2f}")
+                        if indicators.get("sma_5") is not None:
+                            lines.append(f"    SMA(5): ${indicators['sma_5']:.2f}")
+                        if indicators.get("ema_3") is not None:
+                            lines.append(f"    EMA(3): ${indicators['ema_3']:.2f}")
+                        if indicators.get("ema_5") is not None:
+                            lines.append(f"    EMA(5): ${indicators['ema_5']:.2f}")
+                        if indicators.get("ema_9") is not None:
+                            lines.append(f"    EMA(9): ${indicators['ema_9']:.2f}")
+                        if indicators.get("ema_12") is not None:
+                            lines.append(f"    EMA(12): ${indicators['ema_12']:.2f}")
+                        # 完整指标
+                        if indicators.get("rsi") is not None:
+                            lines.append(f"    RSI(14): {indicators['rsi']:.2f}")
+                        if indicators.get("ema_26") is not None:
+                            lines.append(f"    EMA(26): ${indicators['ema_26']:.2f}")
+                        if indicators.get("ema_50") is not None:
+                            lines.append(f"    EMA(50): ${indicators['ema_50']:.2f}")
+                        if indicators.get("macd") is not None:
+                            lines.append(f"    MACD: {indicators['macd']:.4f}")
+                            if indicators.get("macd_signal") is not None:
+                                lines.append(f"    MACD Signal: {indicators['macd_signal']:.4f}")
+                            if indicators.get("macd_histogram") is not None:
+                                lines.append(f"    MACD Histogram: {indicators['macd_histogram']:.4f}")
+                        if indicators.get("bb_upper") is not None and indicators.get("bb_lower") is not None:
+                            lines.append(f"    Bollinger Bands: ${indicators['bb_lower']:.2f} - ${indicators['bb_upper']:.2f}")
+                    else:
+                        # 指标字典存在但所有值都是None
+                        lines.append(f"  📈 Technical Indicators: Not available (insufficient historical data - need at least 14 data points)")
                 else:
                     # 如果没有技术指标，说明数据不足或计算失败
                     lines.append(f"  📈 Technical Indicators: Not available (insufficient historical data - need at least 14 data points)")
@@ -418,21 +450,44 @@ class DataFormatter:
                     # 添加技术指标信息
                     if "indicators" in ticker and ticker["indicators"]:
                         indicators = ticker["indicators"]
-                        lines.append(f"    📈 Technical Indicators:")
-                        if indicators.get("rsi") is not None:
-                            lines.append(f"      RSI(14): {indicators['rsi']:.2f}")
-                        if indicators.get("ema_9") is not None:
-                            lines.append(f"      EMA(9): ${indicators['ema_9']:.2f}")
-                        if indicators.get("ema_26") is not None:
-                            lines.append(f"      EMA(26): ${indicators['ema_26']:.2f}")
-                        if indicators.get("ema_50") is not None:
-                            lines.append(f"      EMA(50): ${indicators['ema_50']:.2f}")
-                        if indicators.get("macd") is not None:
-                            lines.append(f"      MACD: {indicators['macd']:.4f}")
-                            if indicators.get("macd_signal") is not None:
-                                lines.append(f"      MACD Signal: {indicators['macd_signal']:.4f}")
-                        if indicators.get("bb_upper") is not None and indicators.get("bb_lower") is not None:
-                            lines.append(f"      Bollinger Bands: ${indicators['bb_lower']:.2f} - ${indicators['bb_upper']:.2f}")
+                        # 检查是否有任何非None的指标值
+                        has_any_indicator = any(v is not None for v in indicators.values())
+                        if has_any_indicator:
+                            lines.append(f"    📈 Technical Indicators:")
+                            # 价格趋势（部分指标）
+                            if indicators.get("price_trend") is not None:
+                                trend = indicators['price_trend']
+                                change_pct = indicators.get('price_change_pct', 0)
+                                lines.append(f"      Price Trend: {trend.upper()} ({change_pct:+.2f}%)")
+                            # 短周期指标（部分指标）
+                            if indicators.get("sma_3") is not None:
+                                lines.append(f"      SMA(3): ${indicators['sma_3']:.2f}")
+                            if indicators.get("sma_5") is not None:
+                                lines.append(f"      SMA(5): ${indicators['sma_5']:.2f}")
+                            if indicators.get("ema_3") is not None:
+                                lines.append(f"      EMA(3): ${indicators['ema_3']:.2f}")
+                            if indicators.get("ema_5") is not None:
+                                lines.append(f"      EMA(5): ${indicators['ema_5']:.2f}")
+                            if indicators.get("ema_9") is not None:
+                                lines.append(f"      EMA(9): ${indicators['ema_9']:.2f}")
+                            if indicators.get("ema_12") is not None:
+                                lines.append(f"      EMA(12): ${indicators['ema_12']:.2f}")
+                            # 完整指标
+                            if indicators.get("rsi") is not None:
+                                lines.append(f"      RSI(14): {indicators['rsi']:.2f}")
+                            if indicators.get("ema_26") is not None:
+                                lines.append(f"      EMA(26): ${indicators['ema_26']:.2f}")
+                            if indicators.get("ema_50") is not None:
+                                lines.append(f"      EMA(50): ${indicators['ema_50']:.2f}")
+                            if indicators.get("macd") is not None:
+                                lines.append(f"      MACD: {indicators['macd']:.4f}")
+                                if indicators.get("macd_signal") is not None:
+                                    lines.append(f"      MACD Signal: {indicators['macd_signal']:.4f}")
+                            if indicators.get("bb_upper") is not None and indicators.get("bb_lower") is not None:
+                                lines.append(f"      Bollinger Bands: ${indicators['bb_lower']:.2f} - ${indicators['bb_upper']:.2f}")
+                        else:
+                            # 指标字典存在但所有值都是None
+                            lines.append(f"    📈 Technical Indicators: Not available (insufficient historical data)")
                     else:
                         # 如果没有技术指标，说明数据不足或计算失败
                         lines.append(f"    📈 Technical Indicators: Not available (insufficient historical data)")
@@ -462,6 +517,7 @@ class DataFormatter:
                     lines.append(f"  ... and {len(trade_pairs) - 10} more pairs available")
         
         return "\n".join(lines) if lines else "No market data available"
+
 
 
 
