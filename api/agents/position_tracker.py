@@ -268,33 +268,34 @@ class PositionTracker:
         Returns:
             格式化的文本
         """
-        with self.lock:
-            positions = self.get_positions(agent_name)
-            usd_balance = self.get_usd_balance(agent_name)
+        # 注意：get_positions 和 get_usd_balance 内部已经使用了锁，所以这里不需要再加锁
+        # 直接调用即可，它们会自己处理锁
+        positions = self.get_positions(agent_name)
+        usd_balance = self.get_usd_balance(agent_name)
+        
+        lines = [f"📊 Your Current Holdings ({agent_name}):"]
+        lines.append(f"  💵 USD Balance: ${usd_balance:.2f}")
+        
+        if positions:
+            lines.append(f"  🪙 Cryptocurrency Holdings:")
+            total_value = usd_balance
+            for currency, quantity in sorted(positions.items()):
+                if current_prices and currency in current_prices:
+                    price = current_prices[currency]
+                    value = quantity * price
+                    total_value += value
+                    lines.append(f"    {currency}: {quantity:.8f} (Value: ${value:.2f} @ ${price:.2f})")
+                else:
+                    lines.append(f"    {currency}: {quantity:.8f}")
+                    if current_prices:
+                        lines.append(f"      (Price not available for {currency})")
             
-            lines = [f"📊 Your Current Holdings ({agent_name}):"]
-            lines.append(f"  💵 USD Balance: ${usd_balance:.2f}")
-            
-            if positions:
-                lines.append(f"  🪙 Cryptocurrency Holdings:")
-                total_value = usd_balance
-                for currency, quantity in sorted(positions.items()):
-                    if current_prices and currency in current_prices:
-                        price = current_prices[currency]
-                        value = quantity * price
-                        total_value += value
-                        lines.append(f"    {currency}: {quantity:.8f} (Value: ${value:.2f} @ ${price:.2f})")
-                    else:
-                        lines.append(f"    {currency}: {quantity:.8f}")
-                        if current_prices:
-                            lines.append(f"      (Price not available for {currency})")
-                
-                if current_prices:
-                    lines.append(f"  💰 Total Portfolio Value: ${total_value:.2f}")
-            else:
-                lines.append(f"  🪙 No cryptocurrency holdings")
-            
-            return "\n".join(lines)
+            if current_prices:
+                lines.append(f"  💰 Total Portfolio Value: ${total_value:.2f}")
+        else:
+            lines.append(f"  🪙 No cryptocurrency holdings")
+        
+        return "\n".join(lines)
     
     def print_summary(self, agent_name: Optional[str] = None):
         """
@@ -332,4 +333,5 @@ class PositionTracker:
                 print(f"  交易次数: {summary['trade_count']}")
             
             print("=" * 80)
+
 
