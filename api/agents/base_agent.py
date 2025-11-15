@@ -544,8 +544,21 @@ Provide your decision in JSON format, selecting the currency with the best oppor
 
         # 请求 LLM 得到决策（提高temperature到0.7，让模型更愿意做出决策）
         try:
+            print(f"[{self.name}] 📞 正在调用LLM (provider={self.llm_provider})...")
+            print(f"[{self.name}] 📝 消息数量: {len(messages)}, 最后一条用户消息长度: {len(user_prompt)} 字符")
+            
             llm_out = self.llm.chat(messages, temperature=0.7, max_tokens=512)
+            
+            print(f"[{self.name}] 📥 LLM返回: keys={list(llm_out.keys()) if isinstance(llm_out, dict) else 'not a dict'}")
+            
             decision_text = llm_out.get("content") or ""
+            
+            if not decision_text:
+                print(f"[{self.name}] ⚠️ LLM返回的content为空！llm_out={llm_out}")
+                return  # 如果LLM返回空内容，不发布决策
+            
+            print(f"[{self.name}] ✓ LLM返回内容长度: {len(decision_text)} 字符")
+            print(f"[{self.name}] 📄 LLM返回内容预览: {decision_text[:200]}...")
             
             # 验证JSON格式（如果可能）
             json_valid = self._validate_json_decision(decision_text)
@@ -569,8 +582,10 @@ Provide your decision in JSON format, selecting the currency with the best oppor
                     "available": self.capital_manager.get_available_capital(self.name),
                     "used": self.capital_manager.get_used_capital(self.name)
                 }
+            
+            print(f"[{self.name}] 📤 准备发布决策到消息总线 (topic={self.decision_topic})...")
             self.bus.publish(self.decision_topic, decision)
-            print(f"[{self.name}] Published decision: {decision_text[:100]}")
+            print(f"[{self.name}] ✅ Published decision: {decision_text[:100]}")
             if self.capital_manager:
                 allocated = self.capital_manager.get_allocated_capital(self.name)
                 available = self.capital_manager.get_available_capital(self.name)
@@ -617,9 +632,6 @@ Provide your decision in JSON format, selecting the currency with the best oppor
             pass
         
         return False
-
-
-
 
 
 
