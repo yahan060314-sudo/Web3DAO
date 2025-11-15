@@ -130,6 +130,14 @@ class MarketDataCollector(threading.Thread):
                 # 这样才能积累足够的数据点来计算技术指标
                 if "price" in formatted_ticker:
                     self.history_storage.add_ticker(pair, formatted_ticker)
+                    # 调试：显示历史数据点数量
+                    price_series = self.history_storage.get_price_series(pair)
+                    if len(price_series) % 5 == 0 or len(price_series) <= 3:  # 每5个点或前3个点打印一次
+                        print(f"[MarketDataCollector] {pair}: 历史数据点数量 = {len(price_series)}")
+                    
+                    # 重要：无论价格是否变化，都更新_last_tickers
+                    # 这样完整快照才能包含所有交易对，从而计算所有交易对的技术指标
+                    self._last_tickers[pair] = formatted_ticker
                 
                 # 检查是否有价格变化（只在价格变化时发布到消息总线，减少消息量）
                 last_ticker = self._last_tickers.get(pair)
@@ -138,7 +146,6 @@ class MarketDataCollector(threading.Thread):
                     price_changed = abs(last_ticker["price"] - formatted_ticker["price"]) > 0.01
                 
                 if price_changed:
-                    self._last_tickers[pair] = formatted_ticker
                     # 发布单个ticker数据（只在价格变化时发布，减少消息量）
                     self.bus.publish(self.market_topic, formatted_ticker)
                     print(f"[MarketDataCollector] Published ticker for {pair}: ${formatted_ticker.get('price', 'N/A')}")
@@ -275,7 +282,6 @@ class MarketDataCollector(threading.Thread):
             tickers=self._last_tickers,  # 返回所有ticker，而不是单个
             balance=self._last_balance
         )
-
 
 
 
